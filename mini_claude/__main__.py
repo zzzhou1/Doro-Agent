@@ -16,6 +16,7 @@ from .ui import print_welcome, print_user_prompt, print_error, print_info, print
 from .session import load_session, get_latest_session_id, list_sessions
 from .memory import list_memories
 from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
+from .interactive import create_repl_prompt_session, prompt_choice
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,8 +77,10 @@ def _resolve_api_config(args: argparse.Namespace) -> tuple[str, str | None, str 
     return "anthropic", None, anthropic_base
 
 
-async def run_repl(agent: Agent) -> None:
+async def run_repl(agent: Agent, prompt_session=None) -> None:
     """Interactive REPL loop."""
+
+    prompt_session = prompt_session or create_repl_prompt_session(discover_skills)
 
     async def confirm_fn(message: str) -> bool:
         try:
@@ -135,9 +138,8 @@ async def run_repl(agent: Agent) -> None:
     print_welcome()
 
     while True:
-        print_user_prompt()
         try:
-            line = input()
+            line = prompt_session.prompt()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!\n")
             break
@@ -165,12 +167,17 @@ async def run_repl(agent: Agent) -> None:
             try:
                 models = await agent.list_models()
                 _print_model_list(models, agent.model, agent.backend)
-                try:
-                    selector = input(
-                        "  Switch to model number or name (Enter to cancel): "
-                    ).strip()
-                except EOFError:
-                    selector = ""
+                selector = prompt_choice(
+                    "  Select model (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
+                    [
+                        (
+                            model,
+                            f"{index}. {model}"
+                            + (" ← current" if model == agent.model else ""),
+                        )
+                        for index, model in enumerate(models, start=1)
+                    ],
+                )
                 if selector:
                     old_model = agent.model
                     new_model = agent.switch_model(
@@ -201,18 +208,25 @@ async def run_repl(agent: Agent) -> None:
         if inp == "/sessions":
             _print_session_list(_sessions_for_agent(agent))
             continue
-        if inp == "/resume" or inp.startswith("/resume "):
-            selector = inp[len("/resume"):].strip()
+        is_resume = inp == "/resume" or inp.startswith("/resume ")
+        is_session = inp == "/session" or inp.startswith("/session ")
+        if is_resume or is_session:
+            command = "/resume" if is_resume else "/session"
+            selector = inp[len(command):].strip()
             sessions = _sessions_for_agent(agent)
             if not selector:
                 if not sessions:
                     print_info("No sessions found for this project and backend.")
                     continue
                 _print_session_list(sessions)
-                try:
-                    selector = input("  Resume session number or ID (Enter to cancel): ").strip()
-                except EOFError:
-                    selector = ""
+                selector = prompt_choice(
+                    "  Select session (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
+                    [
+                        (str(metadata["id"]), _session_choice_label(index, metadata))
+                        for index, metadata in enumerate(sessions, start=1)
+                        if metadata.get("id")
+                    ],
+                )
                 if not selector:
                     continue
             try:
@@ -315,14 +329,20 @@ def _print_session_list(sessions: list[dict]) -> None:
         return
     print_info(f"Sessions for this project ({len(sessions)}):")
     for index, metadata in enumerate(sessions, start=1):
-        updated = metadata.get("updatedAt") or metadata.get("startTime") or "unknown time"
-        model = metadata.get("model") or "unknown model"
-        count = metadata.get("messageCount", 0)
-        preview = metadata.get("preview") or "(no preview)"
         print(
-            f"    {index:>2}. {metadata.get('id', '?')} | {updated} | "
-            f"{model} | {count} messages | {preview}"
+            f"    {_session_choice_label(index, metadata)}"
         )
+
+
+def _session_choice_label(index: int, metadata: dict) -> str:
+    updated = metadata.get("updatedAt") or metadata.get("startTime") or "unknown time"
+    model = metadata.get("model") or "unknown model"
+    count = metadata.get("messageCount", 0)
+    preview = metadata.get("preview") or "(no preview)"
+    return (
+        f"{index:>2}. {metadata.get('id', '?')} | {updated} | "
+        f"{model} | {count} messages | {preview}"
+    )
 
 
 def _resolve_session_selector(selector: str, sessions: list[dict]) -> str:
@@ -379,6 +399,7 @@ REPL commands:
   /cost               Show token usage and cost
   /model              List models and select one interactively
   /model NAME         Switch model within the current backend
+  /session            Select and resume a saved session
   /sessions           List sessions for this project and backend
   /resume [N|ID]      Select and resume a saved session
   /compact            Manually compact conversation

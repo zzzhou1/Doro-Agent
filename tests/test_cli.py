@@ -142,16 +142,16 @@ async def test_repl_model_selection_switches_by_number(monkeypatch) -> None:
     agent._output_buffer = None
     agent.list_models = AsyncMock(return_value=["alpha", "beta"])
     agent.switch_model.return_value = "beta"
-    responses = iter(["/model", "2", "exit"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+    prompt_session = Mock()
+    prompt_session.prompt.side_effect = ["/model", "exit"]
 
     with (
         patch("mini_claude.__main__.signal.signal"),
         patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.print_user_prompt"),
         patch("mini_claude.__main__.print_info"),
+        patch("mini_claude.__main__.prompt_choice", return_value="beta"),
     ):
-        await run_repl(agent)
+        await run_repl(agent, prompt_session=prompt_session)
 
     agent.list_models.assert_awaited_once_with()
     agent.switch_model.assert_called_once_with("beta")
