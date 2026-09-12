@@ -139,7 +139,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
 
     while True:
         try:
-            line = prompt_session.prompt()
+            line = await prompt_session.prompt_async()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!\n")
             break
@@ -167,7 +167,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
             try:
                 models = await agent.list_models()
                 _print_model_list(models, agent.model, agent.backend)
-                selector = prompt_choice(
+                selector = await prompt_choice(
                     "  Select model (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
                     [
                         (
@@ -219,7 +219,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                     print_info("No sessions found for this project and backend.")
                     continue
                 _print_session_list(sessions)
-                selector = prompt_choice(
+                selector = await prompt_choice(
                     "  Select session (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
                     [
                         (str(metadata["id"]), _session_choice_label(index, metadata))

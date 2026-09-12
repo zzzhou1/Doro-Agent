@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Iterable, Protocol
 
-from prompt_toolkit import PromptSession, prompt
+from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
@@ -144,7 +144,7 @@ def create_repl_prompt_session(
     )
 
 
-def prompt_choice(
+async def prompt_choice(
     message: str,
     options: list[tuple[str, str]],
     input=None,
@@ -158,15 +158,15 @@ def prompt_choice(
         get_app().current_buffer.start_completion(select_first=True)
 
     try:
-        result = prompt(
-            message,
+        session = PromptSession(
+            message=message,
             completer=ChoiceCompleter(options),
             complete_while_typing=True,
             key_bindings=create_choice_key_bindings(),
-            pre_run=_show_choices,
             input=input,
             output=output,
         )
+        result = await session.prompt_async(pre_run=_show_choices)
     except (EOFError, KeyboardInterrupt):
         return None
     return result.strip() or None

@@ -143,18 +143,23 @@ async def test_repl_model_selection_switches_by_number(monkeypatch) -> None:
     agent.list_models = AsyncMock(return_value=["alpha", "beta"])
     agent.switch_model.return_value = "beta"
     prompt_session = Mock()
-    prompt_session.prompt.side_effect = ["/model", "exit"]
+    prompt_session.prompt_async = AsyncMock(side_effect=["/model", "exit"])
 
     with (
         patch("mini_claude.__main__.signal.signal"),
         patch("mini_claude.__main__.print_welcome"),
         patch("mini_claude.__main__.print_info"),
-        patch("mini_claude.__main__.prompt_choice", return_value="beta"),
+        patch(
+            "mini_claude.__main__.prompt_choice",
+            new=AsyncMock(return_value="beta"),
+        ),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
     agent.list_models.assert_awaited_once_with()
     agent.switch_model.assert_called_once_with("beta")
+    prompt_session.prompt_async.assert_awaited()
+    prompt_session.prompt.assert_not_called()
 
 
 def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:
