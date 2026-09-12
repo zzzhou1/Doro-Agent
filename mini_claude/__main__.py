@@ -12,7 +12,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .agent import Agent, BACKEND_MODEL_ENV, default_model_for
-from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
+from .ui import (
+    live_status,
+    print_error,
+    print_info,
+    print_plan_approval_options,
+    print_plan_for_approval,
+    print_user_prompt,
+    print_welcome,
+    suspend_live_status,
+)
 from .session import load_session, get_latest_session_id, list_sessions
 from .memory import list_memories
 from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
@@ -140,11 +149,26 @@ def _resolve_model(args: argparse.Namespace, backend: str) -> tuple[str, str]:
 async def run_repl(agent: Agent, prompt_session=None) -> None:
     """Interactive REPL loop."""
 
-    prompt_session = prompt_session or create_repl_prompt_session(discover_skills)
+    prompt_session = prompt_session or create_repl_prompt_session(
+        discover_skills, status_provider=agent.get_status_snapshot
+    )
+
+    async def chat_with_status(message: str) -> None:
+        def running_snapshot():
+            snapshot = agent.get_status_snapshot()
+            snapshot["processing"] = True
+            return snapshot
+
+        with live_status(running_snapshot):
+            await agent.chat(message)
+
+    def status_safe_input(message: str) -> str:
+        with suspend_live_status():
+            return input(message)
 
     async def confirm_fn(message: str) -> bool:
         try:
-            answer = input("  Allow? (y/n): ")
+            answer = status_safe_input("  Allow? (y/n): ")
             return answer.lower().startswith("y")
         except EOFError:
             return False
@@ -156,7 +180,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
         print_plan_approval_options()
         while True:
             try:
-                choice = input("  Enter choice (1-4): ").strip()
+                choice = status_safe_input("  Enter choice (1-4): ").strip()
             except EOFError:
                 return {"choice": "manual-execute"}
             if choice == "1":
@@ -167,7 +191,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                 return {"choice": "manual-execute"}
             elif choice == "4":
                 try:
-                    feedback = input("  Feedback (what to change): ").strip()
+                    feedback = status_safe_input("  Feedback (what to change): ").strip()
                 except EOFError:
                     feedback = ""
                 return {"choice": "keep-planning", "feedback": feedback or None}
@@ -292,7 +316,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                 session_id = _resolve_session_selector(selector, sessions)
                 if agent.has_conversation_history():
                     try:
-                        answer = input("  Replace the current conversation? (y/n): ").strip()
+                        answer = status_safe_input("  Replace the current conversation? (y/n): ").strip()
                     except EOFError:
                         answer = "n"
                     if not answer.lower().startswith("y"):
@@ -340,10 +364,10 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                     if skill.context == "fork":
                         result = execute_skill(skill.name, cmd_args)
                         if result:
-                            await agent.chat(f'Use the skill tool to invoke "{skill.name}" with args: {cmd_args or "(none)"}')
+                            await chat_with_status(f'Use the skill tool to invoke "{skill.name}" with args: {cmd_args or "(none)"}')
                     else:
                         resolved = resolve_skill_prompt(skill, cmd_args)
-                        await agent.chat(resolved)
+                        await chat_with_status(resolved)
                 except Exception as e:
                     if "abort" not in str(e).lower():
                         print_error(str(e))
@@ -351,7 +375,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
 
         # Normal chat
         try:
-            await agent.chat(inp)
+            await chat_with_status(inp)
         except Exception as e:
             if "abort" not in str(e).lower():
                 print_error(str(e))

@@ -2,14 +2,126 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 import sys
 import threading
 import time
+from typing import Any
 
 from rich.console import Console
+from rich.live import Live
+from rich.text import Text
+
+from .status import format_status_lines
 
 console = Console(highlight=False)
 
+StatusProvider = Callable[[], Mapping[str, Any]]
+
+
+class _LiveStatusRenderable:
+    """Dynamic Rich renderable backed by the same snapshot as the prompt bar."""
+
+    def __init__(self, provider: StatusProvider):
+        self.provider = provider
+
+    def __rich_console__(self, _console, options):
+        try:
+            divider, path, info = format_status_lines(
+                self.provider(), max(options.max_width, 20)
+            )
+        except Exception:
+            divider, path, info = "─" * max(options.max_width, 20), "", "status unavailable"
+        text = Text()
+        text.append(divider + "\n", style="#875f87")
+        text.append(path + "\n", style="bright_black")
+        text.append(info, style="bright_black")
+        yield text
+
+
+_live_status: Live | None = None
+_live_status_provider: StatusProvider | None = None
+_live_status_lock = threading.RLock()
+
+
+def live_status_active() -> bool:
+    with _live_status_lock:
+        return _live_status is not None
+
+
+def start_live_status(provider: StatusProvider) -> bool:
+    """Pin status below streaming output; return whether Live was started."""
+    global _live_status, _live_status_provider
+    with _live_status_lock:
+        if _live_status is not None or not console.is_terminal:
+            return False
+        live = Live(
+            _LiveStatusRenderable(provider),
+            console=console,
+            refresh_per_second=4,
+            transient=True,
+            redirect_stdout=True,
+            redirect_stderr=True,
+        )
+        _live_status = live
+        _live_status_provider = provider
+        try:
+            live.start(refresh=True)
+            return True
+        except Exception:
+            _live_status = None
+            _live_status_provider = None
+            try:
+                live.stop()
+            except Exception:
+                pass
+            return False
+
+
+def refresh_live_status() -> None:
+    with _live_status_lock:
+        if _live_status is not None:
+            _live_status.refresh()
+
+
+def stop_live_status() -> None:
+    """Remove the live bar and restore stdout/stderr. Safe to call repeatedly."""
+    global _live_status, _live_status_provider
+    with _live_status_lock:
+        live = _live_status
+        _live_status = None
+        _live_status_provider = None
+    if live is not None:
+        try:
+            live.stop()
+        except Exception:
+            pass
+
+
+@contextmanager
+def live_status(provider: StatusProvider) -> Iterator[None]:
+    started = start_live_status(provider)
+    try:
+        yield
+    finally:
+        if started:
+            stop_live_status()
+
+
+@contextmanager
+def suspend_live_status() -> Iterator[None]:
+    """Temporarily release the terminal for blocking confirmation prompts."""
+    with _live_status_lock:
+        provider = _live_status_provider
+    if provider is None:
+        yield
+        return
+    stop_live_status()
+    try:
+        yield
+    finally:
+        start_live_status(provider)
 # ─── Basic output ──────────────────────────────────────────
 
 
@@ -24,8 +136,13 @@ def print_user_prompt() -> None:
 
 
 def print_assistant_text(text: str) -> None:
-    sys.stdout.write(text)
-    sys.stdout.flush()
+    if live_status_active():
+        # Rich Live owns the cursor; printing through its Console keeps this
+        # chunk above the pinned status bar and still streams immediately.
+        console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+    else:
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
 
 def print_tool_call(name: str, inp: dict) -> None:
@@ -177,6 +294,9 @@ _spinner_stop = threading.Event()
 
 
 def start_spinner(label: str = "Thinking") -> None:
+    if live_status_active():
+        refresh_live_status()
+        return
     global _spinner_thread
     if _spinner_thread is not None:
         return
@@ -197,6 +317,9 @@ def start_spinner(label: str = "Thinking") -> None:
 
 
 def stop_spinner() -> None:
+    if live_status_active():
+        refresh_live_status()
+        return
     global _spinner_thread
     if _spinner_thread is None:
         return

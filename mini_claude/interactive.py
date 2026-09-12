@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from prompt_toolkit import Application, PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -16,8 +17,11 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
+from .status import format_status_lines
+
 
 INPUT_HISTORY_FILE = Path.home() / ".mini-claude" / "input_history"
+StatusProvider = Callable[[], Mapping[str, Any]]
 
 BUILTIN_COMMANDS = {
     "/clear": "Clear conversation history",
@@ -172,14 +176,35 @@ class InlineSelector:
         )
 
 
+def build_status_toolbar(
+    status_provider: StatusProvider, width: int | None = None
+) -> list[tuple[str, str]]:
+    """Return a three-line Prompt Toolkit toolbar from current agent state."""
+    try:
+        divider, path, info = format_status_lines(status_provider(), width)
+    except Exception:
+        divider, path, info = "─" * max(width or 20, 20), "", "status unavailable"
+    return [
+        ("class:status.divider", divider + "\n"),
+        ("class:status.path", path + "\n"),
+        ("class:status.info", info),
+    ]
+
+
 def create_repl_prompt_session(
     skill_provider: Callable[[], Iterable[SkillLike]],
     history_path: Path | None = None,
     input=None,
     output=None,
+    status_provider: StatusProvider | None = None,
 ) -> PromptSession:
     path = history_path or INPUT_HISTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
+    bottom_toolbar = (
+        (lambda: build_status_toolbar(status_provider))
+        if status_provider is not None
+        else None
+    )
     return PromptSession(
         message=[("class:prompt", "\n> ")],
         history=FileHistory(str(path)),
@@ -187,7 +212,14 @@ def create_repl_prompt_session(
         complete_while_typing=True,
         enable_history_search=True,
         key_bindings=create_history_key_bindings(),
-        style=Style.from_dict({"prompt": "bold ansigreen"}),
+        bottom_toolbar=bottom_toolbar,
+        style=Style.from_dict({
+            "prompt": "bold ansigreen",
+            "bottom-toolbar": "bg:#101010 #808080",
+            "status.divider": "#875f87",
+            "status.path": "#808080",
+            "status.info": "#808080",
+        }),
         input=input,
         output=output,
     )

@@ -13,6 +13,7 @@ from prompt_toolkit.output import DummyOutput
 from mini_claude.interactive import (
     InlineSelector,
     SlashCommandCompleter,
+    build_status_toolbar,
     create_history_key_bindings,
     create_repl_prompt_session,
 )
@@ -53,6 +54,45 @@ def test_repl_prompt_session_uses_persistent_file_history(tmp_path) -> None:
 
         assert isinstance(session.history, FileHistory)
         assert history_path.parent.exists()
+
+
+def test_repl_prompt_session_uses_dynamic_status_toolbar(tmp_path) -> None:
+    snapshot = {
+        "cwd": str(tmp_path),
+        "context_used": 0,
+        "context_window": 128000,
+        "auto_compact": True,
+        "backend": "openai",
+        "model": "gpt-test",
+    }
+    provider = Mock(return_value=snapshot)
+
+    with create_pipe_input() as pipe_input:
+        session = create_repl_prompt_session(
+            lambda: [],
+            tmp_path / "history",
+            input=pipe_input,
+            output=DummyOutput(),
+            status_provider=provider,
+        )
+        assert callable(session.bottom_toolbar)
+        fragments = session.bottom_toolbar()
+
+    text = "".join(fragment[1] for fragment in fragments)
+    assert str(tmp_path) in text
+    assert "0.0%/128K (auto)" in text
+    assert "gpt-test" in text
+    provider.assert_called_once_with()
+
+
+def test_status_toolbar_recovers_from_provider_errors() -> None:
+    def broken_provider():
+        raise RuntimeError("boom")
+
+    fragments = build_status_toolbar(broken_provider, width=40)
+    text = "".join(fragment[1] for fragment in fragments)
+    assert "status unavailable" in text
+    assert "boom" not in text
 
 
 def test_history_arrow_bindings_navigate_history() -> None:

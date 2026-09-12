@@ -115,5 +115,22 @@ def test_agent_keeps_an_explicit_model() -> None:
 def test_context_window_tracks_the_resolved_model() -> None:
     """effective_window keys off self.model, so it must not read a stale local."""
     with _model_env():
-        assert Agent(backend="openai").effective_window == 128000 - 20000
-        assert Agent(backend="anthropic").effective_window == 200000 - 20000
+        openai_agent = Agent(backend="openai")
+        anthropic_agent = Agent(backend="anthropic")
+        assert openai_agent.context_window == 128000
+        assert openai_agent.effective_window == 128000 - 20000
+        assert anthropic_agent.context_window == 200000
+        assert anthropic_agent.effective_window == 200000 - 20000
+
+
+def test_status_snapshot_contains_display_state_but_no_credentials() -> None:
+    with _model_env():
+        agent = Agent(backend="openai", api_key="super-secret")
+    snapshot = agent.get_status_snapshot()
+
+    assert snapshot["backend"] == "openai"
+    assert snapshot["model"] == "gpt-5.6-sol"
+    assert snapshot["context_window"] == 128000
+    assert snapshot["session_id"] == agent.session_id
+    assert "api_key" not in snapshot
+    assert "api_base" not in snapshot

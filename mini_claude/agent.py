@@ -287,7 +287,8 @@ class Agent:
         self.max_cost_usd = max_cost_usd
         self.max_turns = max_turns
         self.confirm_fn = confirm_fn
-        self.effective_window = _get_context_window(self.model) - 20000
+        self.context_window = _get_context_window(self.model)
+        self.effective_window = self.context_window - 20000
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._last_user_preview = ""
@@ -440,6 +441,22 @@ class Agent:
             "cache_write": self.total_cache_write_tokens,
         }
 
+    def get_status_snapshot(self) -> dict[str, Any]:
+        """Return non-sensitive state for the interactive terminal status bar."""
+        return {
+            "cwd": str(Path.cwd()),
+            "context_used": self.last_input_token_count,
+            "context_window": self.context_window,
+            "auto_compact": True,
+            "cost_usd": self._get_current_cost_usd(),
+            "session_id": self.session_id,
+            "backend": self.backend,
+            "model": self.model,
+            "permission_mode": self.permission_mode,
+            "thinking_mode": self._thinking_mode,
+            "processing": self.is_processing,
+        }
+
     async def aclose(self) -> None:
         """Release external resources: MCP server subprocesses and HTTP clients."""
         try:
@@ -529,7 +546,8 @@ class Agent:
         if not model:
             raise ValueError("Model name cannot be empty")
         self.model = model
-        self.effective_window = _get_context_window(model) - 20000
+        self.context_window = _get_context_window(model)
+        self.effective_window = self.context_window - 20000
         self._thinking_mode = self._resolve_thinking_mode()
         return self.model
 
