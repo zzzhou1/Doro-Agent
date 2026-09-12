@@ -11,9 +11,8 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
 from mini_claude.interactive import (
-    ChoiceCompleter,
+    InlineSelector,
     SlashCommandCompleter,
-    create_choice_key_bindings,
     create_history_key_bindings,
     create_repl_prompt_session,
 )
@@ -42,16 +41,6 @@ def test_slash_completion_includes_commands_and_skills() -> None:
     assert _completion_texts(completer, "normal input") == []
 
 
-def test_choice_completion_filters_values_and_labels() -> None:
-    completer = ChoiceCompleter([
-        ("session-a", "1. session-a | fix tests"),
-        ("session-b", "2. session-b | update docs"),
-    ])
-
-    assert _completion_texts(completer, "docs") == ["session-b"]
-    assert _completion_texts(completer, "session-") == ["session-a", "session-b"]
-
-
 def test_repl_prompt_session_uses_persistent_file_history(tmp_path) -> None:
     history_path = tmp_path / "input_history"
     with create_pipe_input() as pipe_input:
@@ -78,14 +67,42 @@ def test_history_arrow_bindings_navigate_history() -> None:
     buffer.history_forward.assert_called_once_with()
 
 
-def test_choice_arrow_bindings_navigate_completion_menu() -> None:
-    bindings = create_choice_key_bindings()
-    buffer = Mock()
-    buffer.complete_state = object()
+def test_slash_key_opens_completion_at_line_start() -> None:
+    bindings = create_history_key_bindings()
+    buffer = Mock(text="", cursor_position=0)
     event = SimpleNamespace(current_buffer=buffer)
 
-    bindings.get_bindings_for_keys((Keys.Up,))[0].handler(event)
-    bindings.get_bindings_for_keys((Keys.Down,))[0].handler(event)
+    bindings.get_bindings_for_keys(("/",))[0].handler(event)
 
-    buffer.complete_previous.assert_called_once_with()
-    buffer.complete_next.assert_called_once_with()
+    buffer.insert_text.assert_called_once_with("/")
+    buffer.start_completion.assert_called_once_with(select_first=False)
+
+
+def test_inline_selector_arrow_keys_change_highlight() -> None:
+    selector = InlineSelector(
+        "Models from anthropic (2):",
+        [("alpha", "1. alpha"), ("beta", "2. beta ← current")],
+        initial_value="beta",
+    )
+    app = selector.create_application(output=DummyOutput())
+    event = SimpleNamespace(app=Mock())
+
+    assert selector.selected_value == "beta"
+    app.key_bindings.get_bindings_for_keys((Keys.Down,))[0].handler(event)
+    assert selector.selected_value == "alpha"
+    app.key_bindings.get_bindings_for_keys((Keys.Up,))[0].handler(event)
+    assert selector.selected_value == "beta"
+    event.app.invalidate.assert_called()
+
+
+def test_inline_selector_renders_one_highlighted_list() -> None:
+    selector = InlineSelector(
+        "Sessions for this project (2):",
+        [("one", "1. one"), ("two", "2. two")],
+    )
+
+    rendered = selector._formatted_text()
+    text = "".join(fragment[1] for fragment in rendered)
+    assert "Sessions for this project (2):" in text
+    assert "❯ 1. one" in text
+    assert "2. two" in text

@@ -5,13 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Iterable, Protocol
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.application import get_app
+from prompt_toolkit import Application, PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import has_completions
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
 
@@ -65,22 +67,16 @@ class SlashCommandCompleter(Completer):
                 )
 
 
-class ChoiceCompleter(Completer):
-    """Complete a value while displaying a richer label."""
-
-    def __init__(self, options: list[tuple[str, str]]):
-        self._options = options
-
-    def get_completions(self, document: Document, complete_event):
-        text = document.text_before_cursor
-        normalized = text.casefold()
-        for value, label in self._options:
-            if not normalized or normalized in value.casefold() or normalized in label.casefold():
-                yield Completion(value, start_position=-len(text), display=label)
-
-
 def create_history_key_bindings() -> KeyBindings:
     bindings = KeyBindings()
+
+    @bindings.add("/")
+    def _start_command_completion(event) -> None:
+        buffer = event.current_buffer
+        at_line_start = buffer.cursor_position == 0 and not buffer.text
+        buffer.insert_text("/")
+        if at_line_start:
+            buffer.start_completion(select_first=False)
 
     @bindings.add("up", filter=~has_completions)
     def _history_previous(event) -> None:
@@ -93,34 +89,87 @@ def create_history_key_bindings() -> KeyBindings:
     return bindings
 
 
-def create_choice_key_bindings() -> KeyBindings:
-    bindings = KeyBindings()
+class InlineSelector:
+    """An in-place arrow-key selector that renders the choices as one list."""
 
-    @bindings.add("up")
-    def _previous_choice(event) -> None:
-        buffer = event.current_buffer
-        if buffer.complete_state is None:
-            buffer.start_completion(select_last=True)
-        else:
-            buffer.complete_previous()
+    def __init__(
+        self,
+        title: str,
+        options: list[tuple[str, str]],
+        initial_value: str | None = None,
+    ):
+        self.title = title
+        self.options = options
+        self.selected_index = 0
+        if initial_value is not None:
+            for index, (value, _) in enumerate(options):
+                if value == initial_value:
+                    self.selected_index = index
+                    break
 
-    @bindings.add("down")
-    def _next_choice(event) -> None:
-        buffer = event.current_buffer
-        if buffer.complete_state is None:
-            buffer.start_completion(select_first=True)
-        else:
-            buffer.complete_next()
+    @property
+    def selected_value(self) -> str:
+        return self.options[self.selected_index][0]
 
-    @bindings.add("enter")
-    def _accept_selection(event) -> None:
-        buffer = event.current_buffer
-        state = buffer.complete_state
-        if state is not None and state.current_completion is not None:
-            buffer.apply_completion(state.current_completion)
-        buffer.validate_and_handle()
+    def _formatted_text(self):
+        fragments = [
+            ("class:selector.title", f"\n  {self.title}\n"),
+            ("class:selector.hint", "  ↑/↓ move · Enter select · Esc cancel\n\n"),
+        ]
+        for index, (_, label) in enumerate(self.options):
+            if index == self.selected_index:
+                fragments.append(("class:selector.selected", f"  ❯ {label}\n"))
+            else:
+                fragments.append(("class:selector.normal", f"    {label}\n"))
+        return fragments
 
-    return bindings
+    def create_application(self, input=None, output=None) -> Application:
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        def _previous(event) -> None:
+            self.selected_index = (self.selected_index - 1) % len(self.options)
+            event.app.invalidate()
+
+        @bindings.add("down")
+        def _next(event) -> None:
+            self.selected_index = (self.selected_index + 1) % len(self.options)
+            event.app.invalidate()
+
+        @bindings.add("enter")
+        def _select(event) -> None:
+            event.app.exit(result=self.selected_value)
+
+        @bindings.add("escape")
+        @bindings.add("c-c")
+        def _cancel(event) -> None:
+            event.app.exit(result=None)
+
+        control = FormattedTextControl(
+            text=self._formatted_text,
+            focusable=True,
+            show_cursor=False,
+        )
+        window = Window(
+            content=control,
+            dont_extend_height=True,
+            wrap_lines=True,
+            always_hide_cursor=True,
+        )
+        return Application(
+            layout=Layout(window, focused_element=window),
+            key_bindings=bindings,
+            style=Style.from_dict({
+                "selector.title": "bold ansicyan",
+                "selector.hint": "ansibrightblack",
+                "selector.selected": "reverse bold",
+                "selector.normal": "",
+            }),
+            full_screen=False,
+            erase_when_done=False,
+            input=input,
+            output=output,
+        )
 
 
 def create_repl_prompt_session(
@@ -145,28 +194,22 @@ def create_repl_prompt_session(
 
 
 async def prompt_choice(
-    message: str,
+    title: str,
     options: list[tuple[str, str]],
+    initial_value: str | None = None,
     input=None,
     output=None,
 ) -> str | None:
-    """Select with arrow keys or type a value; Enter accepts the highlighted item."""
+    """Render one in-place list and return the arrow-key-selected value."""
     if not options:
         return None
-
-    def _show_choices() -> None:
-        get_app().current_buffer.start_completion(select_first=True)
-
     try:
-        session = PromptSession(
-            message=message,
-            completer=ChoiceCompleter(options),
-            complete_while_typing=True,
-            key_bindings=create_choice_key_bindings(),
-            input=input,
-            output=output,
+        selector = InlineSelector(
+            title=title,
+            options=options,
+            initial_value=initial_value,
         )
-        result = await session.prompt_async(pre_run=_show_choices)
+        result = await selector.create_application(input=input, output=output).run_async()
     except (EOFError, KeyboardInterrupt):
         return None
-    return result.strip() or None
+    return result

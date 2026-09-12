@@ -166,9 +166,8 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
         if inp == "/model":
             try:
                 models = await agent.list_models()
-                _print_model_list(models, agent.model, agent.backend)
                 selector = await prompt_choice(
-                    "  Select model (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
+                    f"Models from {agent.backend} ({len(models)}):",
                     [
                         (
                             model,
@@ -177,6 +176,7 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                         )
                         for index, model in enumerate(models, start=1)
                     ],
+                    initial_value=agent.model,
                 )
                 if selector:
                     old_model = agent.model
@@ -218,9 +218,8 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                 if not sessions:
                     print_info("No sessions found for this project and backend.")
                     continue
-                _print_session_list(sessions)
                 selector = await prompt_choice(
-                    "  Select session (↑/↓, type to filter, Enter; Esc then Enter cancels): ",
+                    f"Sessions for this project ({len(sessions)}):",
                     [
                         (str(metadata["id"]), _session_choice_label(index, metadata))
                         for index, metadata in enumerate(sessions, start=1)
@@ -300,13 +299,6 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
 
 def _sessions_for_agent(agent: Agent) -> list[dict]:
     return list_sessions(cwd=Path.cwd(), backend=agent.backend)
-
-
-def _print_model_list(models: list[str], current_model: str, backend: str) -> None:
-    print_info(f"Models from {backend} ({len(models)}):")
-    for index, model in enumerate(models, start=1):
-        marker = " ← current" if model == current_model else ""
-        print(f"    {index:>2}. {model}{marker}")
 
 
 def _resolve_model_selector(selector: str, models: list[str]) -> str:

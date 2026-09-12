@@ -162,6 +162,38 @@ async def test_repl_model_selection_switches_by_number(monkeypatch) -> None:
     prompt_session.prompt.assert_not_called()
 
 
+@pytest.mark.parametrize("command", ["/session", "/resume"])
+@pytest.mark.asyncio
+async def test_repl_session_aliases_use_the_same_selector(command: str) -> None:
+    agent = Mock()
+    agent.backend = "openai"
+    agent._aborted = False
+    agent._output_buffer = None
+    agent.has_conversation_history.return_value = False
+    prompt_session = Mock()
+    prompt_session.prompt_async = AsyncMock(side_effect=[command, "exit"])
+    sessions = [{
+        "id": "saved123",
+        "model": "gpt-test",
+        "messageCount": 2,
+        "preview": "hello",
+    }]
+    choice = AsyncMock(return_value="saved123")
+
+    with (
+        patch("mini_claude.__main__.signal.signal"),
+        patch("mini_claude.__main__.print_welcome"),
+        patch("mini_claude.__main__.print_info"),
+        patch("mini_claude.__main__._sessions_for_agent", return_value=sessions),
+        patch("mini_claude.__main__.prompt_choice", new=choice),
+        patch("mini_claude.__main__._restore_agent_session") as restore,
+    ):
+        await run_repl(agent, prompt_session=prompt_session)
+
+    choice.assert_awaited_once()
+    restore.assert_called_once_with(agent, "saved123")
+
+
 def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:
     agent = Mock()
     monkeypatch.chdir(tmp_path)
