@@ -1,2 +1,0 @@
-[console_scripts]
-DORO = mini_claude.__main__:main

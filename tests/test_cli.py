@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tomllib
+from argparse import Namespace
+from pathlib import Path
+from unittest.mock import patch
+
+from mini_claude.__main__ import _resolve_api_config
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _args(api_base: str | None = None) -> Namespace:
+    return Namespace(api_base=api_base)
+
+
+def test_console_script_metadata_matches_documentation() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["project"]["scripts"] == {
+        "mini-claude": "mini_claude.__main__:main"
+    }
+    assert metadata["project"]["requires-python"] == ">=3.11"
+
+
+def test_module_help_runs_without_api_key() -> None:
+    env = os.environ.copy()
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    ):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, "-m", "mini_claude", "--help"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Usage: mini-claude" in result.stdout
+
+
+def test_openai_key_uses_official_default_endpoint() -> None:
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-openai-key"}, clear=True):
+        assert _resolve_api_config(_args()) == ("openai", "test-openai-key", None)
+
+
+def test_openai_compatible_endpoint_is_preserved() -> None:
+    env = {
+        "OPENAI_API_KEY": "test-openai-key",
+        "OPENAI_BASE_URL": "https://example.invalid/v1",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        assert _resolve_api_config(_args()) == (
+            "openai",
+            "test-openai-key",
+            "https://example.invalid/v1",
+        )
+
+
+def test_anthropic_is_preferred_over_openai_without_base_url() -> None:
+    env = {
+        "ANTHROPIC_API_KEY": "test-anthropic-key",
+        "ANTHROPIC_BASE_URL": "https://anthropic.example.invalid",
+        "OPENAI_API_KEY": "test-openai-key",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        assert _resolve_api_config(_args()) == (
+            "anthropic",
+            "test-anthropic-key",
+            "https://anthropic.example.invalid",
+        )
+
+
+def test_explicit_api_base_selects_openai_compatible_backend() -> None:
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "shared-key"}, clear=True):
+        assert _resolve_api_config(_args("https://provider.example/v1")) == (
+            "openai",
+            "shared-key",
+            "https://provider.example/v1",
+        )

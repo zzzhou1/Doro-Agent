@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-from-scratch"
+version = "1.0.0"
+description = "A minimal coding agent inspired by Claude Code, built from scratch in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "anthropic>=0.40.0,<1.0.0",
+    "openai>=1.50.0,<3.0.0",
+    "rich>=13.0.0,<15.0.0",
+]
+
+[project.scripts]
+mini-claude = "mini_claude.__main__:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0,<10.0.0",
+    "pytest-asyncio>=0.24.0,<2.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["mini_claude*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+testpaths = ["tests"]
