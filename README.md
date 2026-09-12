@@ -27,6 +27,32 @@ python -m pip install -e .
 
 安装完成后可使用 `mini-claude`，也可直接使用 `python -m mini_claude`。
 
+## 使用 `.env` 配置
+
+复制示例配置，然后只填写一个服务商的 Key：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+OpenAI 示例：
+
+```dotenv
+OPENAI_API_KEY=your-key
+OPENAI_BASE_URL=https://your-provider.example/v1
+MINI_CLAUDE_MODEL=gpt-4o
+```
+
+Anthropic 示例：
+
+```dotenv
+ANTHROPIC_API_KEY=your-key
+ANTHROPIC_BASE_URL=
+MINI_CLAUDE_MODEL=claude-sonnet-4-6
+```
+
+`.env` 已被 Git 忽略。配置优先级为：命令行参数、当前终端环境变量、`.env`、程序默认值。
+
 ## 配置与运行
 
 Anthropic：

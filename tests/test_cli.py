@@ -8,7 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
-from mini_claude.__main__ import _resolve_api_config
+from mini_claude.__main__ import _load_project_env, _resolve_api_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,3 +86,17 @@ def test_explicit_api_base_selects_openai_compatible_backend() -> None:
             "shared-key",
             "https://provider.example/v1",
         )
+
+
+def test_project_dotenv_loads_without_overriding_shell(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=from-dotenv\n"
+        "OPENAI_BASE_URL=https://dotenv.example/v1\n"
+        "MINI_CLAUDE_MODEL=dotenv-model\n",
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "from-shell"}, clear=True):
+        assert _load_project_env(tmp_path) is True
+        assert os.environ["OPENAI_API_KEY"] == "from-shell"
+        assert os.environ["OPENAI_BASE_URL"] == "https://dotenv.example/v1"
+        assert os.environ["MINI_CLAUDE_MODEL"] == "dotenv-model"

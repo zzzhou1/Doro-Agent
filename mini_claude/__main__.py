@@ -7,6 +7,9 @@ import asyncio
 import os
 import signal
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from .agent import Agent
 from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
@@ -46,6 +49,12 @@ def _resolve_permission_mode(args: argparse.Namespace) -> str:
     if args.dont_ask:
         return "dontAsk"
     return "default"
+
+
+def _load_project_env(directory: Path | None = None) -> bool:
+    """Load .env from the working directory without overriding shell variables."""
+    env_path = (directory or Path.cwd()) / ".env"
+    return load_dotenv(dotenv_path=env_path, override=False)
 
 
 def _resolve_api_config(args: argparse.Namespace) -> tuple[str, str | None, str | None]:
@@ -208,6 +217,7 @@ async def run_repl(agent: Agent) -> None:
 
 
 def main() -> None:
+    _load_project_env()
     args = parse_args()
 
     if args.help:
