@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -57,6 +58,58 @@ def test_switch_model_keeps_backend_and_refreshes_model_state() -> None:
     assert agent._thinking_mode == "disabled"
     with pytest.raises(ValueError, match="empty"):
         agent.switch_model("   ")
+
+
+@pytest.mark.asyncio
+async def test_openai_model_list_includes_current_model() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            model="current-model",
+            api_key="test-key",
+            custom_system_prompt="test prompt",
+        )
+    agent._openai_client.models.list = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[SimpleNamespace(id="z-model"), {"id": "a-model"}]
+        )
+    )
+
+    assert await agent.list_models() == ["a-model", "current-model", "z-model"]
+    agent._openai_client.models.list.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_list_uses_bounded_request() -> None:
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+        agent = Agent(
+            backend="anthropic",
+            model="claude-current",
+            api_key="test-key",
+            custom_system_prompt="test prompt",
+        )
+    agent._anthropic_client.models.list = AsyncMock(
+        return_value=SimpleNamespace(data=[SimpleNamespace(id="claude-other")])
+    )
+
+    assert await agent.list_models() == ["claude-current", "claude-other"]
+    agent._anthropic_client.models.list.assert_awaited_once_with(limit=100)
+
+
+@pytest.mark.asyncio
+async def test_model_list_rejects_empty_provider_response() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            api_key="test-key",
+            custom_system_prompt="test prompt",
+        )
+    agent._openai_client.models.list = AsyncMock(
+        return_value=SimpleNamespace(data=[])
+    )
+
+    with pytest.raises(RuntimeError, match="returned no models"):
+        await agent.list_models()
 
 
 def test_restore_session_restores_model_id_and_history() -> None:

@@ -96,7 +96,7 @@ mini-claude --model your-model "hello"
 交互式 REPL 还支持会话和模型管理：
 
 ```text
-/model                 显示当前后端和模型
+/model                 从当前 API 获取模型列表，并按序号或名称选择
 /model <模型名>        在当前后端内切换模型，并保留本次对话历史
 /sessions              列出当前项目、当前后端的历史会话
 /resume                列出会话并交互选择恢复
@@ -108,6 +108,8 @@ mini-claude --model your-model "hello"
 /memory                 列出长期记忆
 /skills                 列出技能
 ```
+
+`/model` 会调用当前后端的模型列表接口。若 OpenAI-compatible 服务没有实现该接口，仍可使用 `/model <模型名>` 直接切换。切换只改变模型，不会改变 OpenAI/Anthropic 后端。
 
 恢复会话时会自动恢复该会话保存的模型，并继续使用原会话 ID。当前版本只允许在同一 API 后端内恢复；例如，用 OpenAI 后端启动时不会列出或恢复 Anthropic 会话。会话列表还会按当前工作目录隔离。
 

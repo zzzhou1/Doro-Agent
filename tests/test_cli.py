@@ -6,15 +6,17 @@ import sys
 import tomllib
 from argparse import Namespace
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from mini_claude.__main__ import (
     _load_project_env,
+    _resolve_model_selector,
     _resolve_api_config,
     _resolve_session_selector,
     _restore_agent_session,
+    run_repl,
 )
 
 
@@ -118,6 +120,41 @@ def test_session_selector_accepts_list_number_or_id() -> None:
         _resolve_session_selector("3", sessions)
     with pytest.raises(ValueError, match="not found"):
         _resolve_session_selector("missing", sessions)
+
+
+def test_model_selector_accepts_list_number_or_exact_name() -> None:
+    models = ["alpha", "12345678", "zeta"]
+
+    assert _resolve_model_selector("1", models) == "alpha"
+    assert _resolve_model_selector("12345678", models) == "12345678"
+    with pytest.raises(ValueError, match="out of range"):
+        _resolve_model_selector("4", models)
+    with pytest.raises(ValueError, match="not in the returned list"):
+        _resolve_model_selector("missing", models)
+
+
+@pytest.mark.asyncio
+async def test_repl_model_selection_switches_by_number(monkeypatch) -> None:
+    agent = Mock()
+    agent.backend = "openai"
+    agent.model = "alpha"
+    agent._aborted = False
+    agent._output_buffer = None
+    agent.list_models = AsyncMock(return_value=["alpha", "beta"])
+    agent.switch_model.return_value = "beta"
+    responses = iter(["/model", "2", "exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    with (
+        patch("mini_claude.__main__.signal.signal"),
+        patch("mini_claude.__main__.print_welcome"),
+        patch("mini_claude.__main__.print_user_prompt"),
+        patch("mini_claude.__main__.print_info"),
+    ):
+        await run_repl(agent)
+
+    agent.list_models.assert_awaited_once_with()
+    agent.switch_model.assert_called_once_with("beta")
 
 
 def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:

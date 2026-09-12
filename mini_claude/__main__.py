@@ -162,7 +162,30 @@ async def run_repl(agent: Agent) -> None:
             agent.show_cost()
             continue
         if inp == "/model":
-            print_info(f"Backend: {agent.backend} | Model: {agent.model}")
+            try:
+                models = await agent.list_models()
+                _print_model_list(models, agent.model, agent.backend)
+                try:
+                    selector = input(
+                        "  Switch to model number or name (Enter to cancel): "
+                    ).strip()
+                except EOFError:
+                    selector = ""
+                if selector:
+                    old_model = agent.model
+                    new_model = agent.switch_model(
+                        _resolve_model_selector(selector, models)
+                    )
+                    print_info(
+                        f"Model switched: {old_model} → {new_model} "
+                        f"(backend remains {agent.backend})"
+                    )
+            except Exception as e:
+                print_error(str(e))
+                print_info(
+                    f"Current model: {agent.model}. "
+                    "You can still use /model <name> to switch manually."
+                )
             continue
         if inp.startswith("/model "):
             try:
@@ -265,6 +288,27 @@ def _sessions_for_agent(agent: Agent) -> list[dict]:
     return list_sessions(cwd=Path.cwd(), backend=agent.backend)
 
 
+def _print_model_list(models: list[str], current_model: str, backend: str) -> None:
+    print_info(f"Models from {backend} ({len(models)}):")
+    for index, model in enumerate(models, start=1):
+        marker = " ← current" if model == current_model else ""
+        print(f"    {index:>2}. {model}{marker}")
+
+
+def _resolve_model_selector(selector: str, models: list[str]) -> str:
+    if selector in models:
+        return selector
+    if selector.isdigit():
+        index = int(selector)
+        if 1 <= index <= len(models):
+            return models[index - 1]
+        raise ValueError(f"Model number out of range: {selector}")
+    raise ValueError(
+        "Model is not in the returned list. "
+        "Use /model <name> to select an unlisted model directly."
+    )
+
+
 def _print_session_list(sessions: list[dict]) -> None:
     if not sessions:
         print_info("No sessions found for this project and backend.")
@@ -333,7 +377,7 @@ REPL commands:
   /clear              Clear conversation history
   /plan               Toggle plan mode (read-only <-> normal)
   /cost               Show token usage and cost
-  /model              Show the current backend and model
+  /model              List models and select one interactively
   /model NAME         Switch model within the current backend
   /sessions           List sessions for this project and backend
   /resume [N|ID]      Select and resume a saved session

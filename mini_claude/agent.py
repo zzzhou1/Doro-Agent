@@ -413,6 +413,26 @@ class Agent:
         self._thinking_mode = self._resolve_thinking_mode()
         return self.model
 
+    async def list_models(self) -> list[str]:
+        """List model IDs exposed by the configured API backend."""
+        if self.use_openai:
+            page = await self._openai_client.models.list()
+        else:
+            page = await self._anthropic_client.models.list(limit=100)
+
+        model_ids: set[str] = set()
+        for item in getattr(page, "data", []) or []:
+            model_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+            if model_id:
+                model_ids.add(str(model_id))
+        if not model_ids:
+            raise RuntimeError(
+                f"The {self.backend} endpoint returned no models. "
+                "Use /model <name> to switch manually."
+            )
+        model_ids.add(self.model)
+        return sorted(model_ids, key=str.casefold)
+
     def has_conversation_history(self) -> bool:
         if self.use_openai:
             return any(message.get("role") != "system" for message in self._openai_messages)
