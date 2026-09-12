@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thinking", action="store_true", help="Enable extended thinking")
     parser.add_argument("--model", "-m", default=None, help="Model to use")
     parser.add_argument("--api-base", default=None, help="OpenAI-compatible API base URL")
+    parser.add_argument("--env-file", default=None, metavar="PATH", help="Load env vars from PATH instead of searching")
     parser.add_argument("--resume", action="store_true", help="Resume last session")
     parser.add_argument("--max-cost", type=float, default=None, help="Max USD spend")
     parser.add_argument("--max-turns", type=int, default=None, help="Max agentic turns")
@@ -52,10 +53,46 @@ def _resolve_permission_mode(args: argparse.Namespace) -> str:
     return "default"
 
 
-def _load_project_env(directory: Path | None = None) -> bool:
-    """Load .env from the working directory without overriding shell variables."""
-    env_path = (directory or Path.cwd()) / ".env"
-    return load_dotenv(dotenv_path=env_path, override=False)
+def _dotenv_candidates(env_file: str | None = None) -> list[Path]:
+    """Ordered .env search path, highest priority first, de-duplicated.
+
+    The working directory wins, then the source tree that owns this package
+    (which is the project root for editable installs), then a user-level file.
+    """
+    if env_file:
+        return [Path(env_file).expanduser()]
+    paths = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+        Path.home() / ".mini-claude" / ".env",
+    ]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _load_project_env(directory: Path | None = None, env_file: str | None = None) -> bool:
+    """Load .env files without overriding shell variables (first value wins).
+
+    Passing ``directory`` restricts the search to that directory's .env.
+    Otherwise ``--env-file`` or the working directory takes priority, with
+    fallbacks to the package source tree and ``~/.mini-claude/.env`` so the
+    installed command works from any working directory.
+    """
+    if directory is not None:
+        candidates = [Path(directory) / ".env"]
+    else:
+        candidates = _dotenv_candidates(env_file)
+    loaded = False
+    for path in candidates:
+        if path.is_file() and load_dotenv(dotenv_path=path, override=False):
+            loaded = True
+    return loaded
 
 
 def _resolve_api_config(args: argparse.Namespace) -> tuple[str, str | None, str | None]:
@@ -365,8 +402,8 @@ def _restore_agent_session(agent: Agent, session_id: str) -> None:
 
 
 def main() -> None:
-    _load_project_env()
     args = parse_args()
+    _load_project_env(env_file=args.env_file)
 
     if args.help:
         print("""
@@ -380,6 +417,7 @@ Options:
   --thinking          Enable extended thinking (Anthropic only)
   --model, -m         Model to use (default: claude-opus-4-6, or MINI_CLAUDE_MODEL env)
   --api-base URL      Use OpenAI-compatible API endpoint (key via env var)
+  --env-file PATH     Read env vars from PATH instead of searching for .env
   --resume            Resume the last session
   --max-cost USD      Stop when estimated cost exceeds this amount
   --max-turns N       Stop after N agentic turns
@@ -415,10 +453,13 @@ Examples:
     resolved_backend, resolved_api_key, resolved_api_base = _resolve_api_config(args)
     
     if not resolved_api_key:
+        searched = "\n".join(f"    {path}" for path in _dotenv_candidates(args.env_file))
         print_error(
             "API key is required.\n"
             "  Set ANTHROPIC_API_KEY (+ optional ANTHROPIC_BASE_URL) for Anthropic format,\n"
-            "  or OPENAI_API_KEY (+ optional OPENAI_BASE_URL) for OpenAI-compatible format."
+            "  or OPENAI_API_KEY (+ optional OPENAI_BASE_URL) for OpenAI-compatible format.\n"
+            "  Also searched for a .env file in:\n"
+            f"{searched}"
         )
         sys.exit(1)
     

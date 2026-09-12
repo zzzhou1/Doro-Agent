@@ -111,6 +111,82 @@ def test_project_dotenv_loads_without_overriding_shell(tmp_path: Path) -> None:
         assert os.environ["MINI_CLAUDE_MODEL"] == "dotenv-model"
 
 
+def _fake_package(tmp_path: Path, dotenv: str | None) -> Path:
+    """Build a throwaway source tree and return its fake __main__.py path."""
+    package_root = tmp_path / "proj"
+    (package_root / "mini_claude").mkdir(parents=True)
+    fake_main = package_root / "mini_claude" / "__main__.py"
+    fake_main.write_text("", encoding="utf-8")
+    if dotenv is not None:
+        (package_root / ".env").write_text(dotenv, encoding="utf-8")
+    return fake_main
+
+
+def test_dotenv_falls_back_to_package_source_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mini_claude.__main__ as cli
+
+    fake_main = _fake_package(tmp_path, "ANTHROPIC_API_KEY=from-source-tree\n")
+    (tmp_path / "work").mkdir()
+
+    monkeypatch.setattr(cli, "__file__", str(fake_main))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
+    monkeypatch.chdir(tmp_path / "work")
+    with patch.dict(os.environ, {}, clear=True):
+        assert _load_project_env() is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-source-tree"
+
+
+def test_dotenv_falls_back_to_user_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mini_claude.__main__ as cli
+
+    fake_main = _fake_package(tmp_path, None)
+    home = tmp_path / "home"
+    (home / ".mini-claude").mkdir(parents=True)
+    (home / ".mini-claude" / ".env").write_text(
+        "ANTHROPIC_API_KEY=from-user-dir\n", encoding="utf-8"
+    )
+    (tmp_path / "work").mkdir()
+
+    monkeypatch.setattr(cli, "__file__", str(fake_main))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(tmp_path / "work")
+    with patch.dict(os.environ, {}, clear=True):
+        assert _load_project_env() is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-user-dir"
+
+
+def test_working_directory_dotenv_wins_over_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import mini_claude.__main__ as cli
+
+    fake_main = _fake_package(tmp_path, "ANTHROPIC_API_KEY=from-source-tree\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / ".env").write_text("ANTHROPIC_API_KEY=from-cwd\n", encoding="utf-8")
+
+    monkeypatch.setattr(cli, "__file__", str(fake_main))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
+    monkeypatch.chdir(work)
+    with patch.dict(os.environ, {}, clear=True):
+        assert _load_project_env() is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-cwd"
+
+
+def test_env_file_argument_replaces_the_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    explicit = tmp_path / "custom.env"
+    explicit.write_text("ANTHROPIC_API_KEY=from-explicit-file\n", encoding="utf-8")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    with patch.dict(os.environ, {}, clear=True):
+        assert _load_project_env(env_file=str(explicit)) is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-explicit-file"
+
+
 def test_session_selector_accepts_list_number_or_id() -> None:
     sessions = [{"id": "abcd1234"}, {"id": "12345678"}]
 
