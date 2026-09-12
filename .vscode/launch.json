@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Mini-Claude",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "mini_claude.__main__", // 关键：使用 module 启动而非 program 文件路径
+            "console": "integratedTerminal",
+            "args": [
+                // "--thinking" // 如果需要调试思考模式，可以解开此行
+            ],
+            "env": {
+                "ANTHROPIC_API_KEY": "你的_CLAUDE_API_KEY",
+                // 如果用 OpenAI，可以用下面两行
+                // "OPENAI_API_KEY": "你的_OPENAI_API_KEY",
+                // "MINI_CLAUDE_MODEL": "gpt-4o"
+            }
+        }
+    ]
+}
