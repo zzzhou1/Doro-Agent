@@ -41,6 +41,9 @@ from .ui import (
     print_info,
     print_sub_agent_start,
     print_sub_agent_end,
+    estimate_cost_usd,
+    format_token_usage,
+    cache_read_discount_for,
     start_spinner,
     stop_spinner,
 )
@@ -79,9 +82,96 @@ async def _with_retry(fn, max_retries: int = 3):
             await asyncio.sleep(delay)
 
 
+def _anthropic_usage_totals(usage) -> tuple[int, int, int]:
+    """Split an Anthropic ``usage`` payload into (total_input, cache_write, cache_read).
+
+    ``input_tokens`` is NOT the whole input. It counts only the portion that
+    missed the prompt cache; when the system prompt and tool definitions are
+    served from cache — which is the normal case after the first turn — it can
+    legitimately read 0 while thousands of tokens were read from cache:
+
+        input_tokens=0  cache_creation_input_tokens=23  cache_read_input_tokens=8814
+
+    Everything the model actually read has to be summed back together, because
+    this number also drives context-window accounting. Treating it as 0 would
+    disable auto-compaction and let the conversation grow past the window.
+    """
+    fresh = getattr(usage, "input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return fresh + cache_write + cache_read, cache_write, cache_read
+
+
+def _openai_usage_totals(usage) -> tuple[int, int, int]:
+    """Split an OpenAI ``usage`` payload into (total_input, output, cache_read).
+
+    The mirror image of ``_anthropic_usage_totals``, and the difference is the
+    easy thing to get wrong: OpenAI's ``prompt_tokens`` is already the *whole*
+    prompt. The cached prefix is a **subset** of it, reported separately in
+    ``prompt_tokens_details.cached_tokens``:
+
+        prompt_tokens=2372  prompt_tokens_details.cached_tokens=1984
+
+    So the cached count is returned for *pricing* only. Adding it back into the
+    input total the way the Anthropic branch must would double-count it and
+    inflate ``last_input_token_count`` — the number every context-management
+    threshold is keyed off.
+
+    Cache writes are deliberately not read: OpenAI does not surcharge them, and
+    the fields some gateways expose for it (``cache_write_tokens``,
+    ``cached_creation_tokens``) are already inside ``prompt_tokens``, so they
+    are billed as fresh input — conservative, never a silent undercount.
+    """
+    total_input = getattr(usage, "prompt_tokens", 0) or 0
+    output = getattr(usage, "completion_tokens", 0) or 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read = (getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+    # A gateway may report a cached count larger than the prompt it belongs to;
+    # clamp so the discounted portion can never exceed the total it discounts.
+    cache_read = min(cache_read, total_input)
+    return total_input, output, cache_read
+
+
+# ─── Default model per backend ──────────────────────────────
+
+# One shared default cannot work: a Claude model name means nothing to an
+# OpenAI-compatible gateway and a GPT name means nothing to Anthropic, so a
+# single hardcoded default always breaks one of the two backends.
+DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-opus-5",
+    "openai": "gpt-5.6-sol",
+}
+
+# Per-backend override env var, consulted by ``resolve_default_model``.
+# ``MINI_CLAUDE_MODEL`` is deliberately *not* in this table: it is a global
+# override applied by the CLI *before* falling back to this lookup, so a value
+# written while one provider was active can never silently leak into the other.
+BACKEND_MODEL_ENV: dict[str, str] = {
+    "anthropic": "ANTHROPIC_MODEL",
+    "openai": "OPENAI_MODEL",
+}
+
+
+def default_model_for(backend: str) -> str:
+    """Built-in default model for a backend (unknown backends fall back to Anthropic)."""
+    return DEFAULT_MODELS.get(backend, DEFAULT_MODELS["anthropic"])
+
+
+def resolve_default_model(backend: str, override: str | None = None) -> str:
+    """Pick a model for ``backend``: explicit > per-backend env var > built-in default."""
+    if override and override.strip():
+        return override.strip()
+    env_name = BACKEND_MODEL_ENV.get(backend)
+    env_value = os.environ.get(env_name, "") if env_name else ""
+    if env_value.strip():
+        return env_value.strip()
+    return default_model_for(backend)
+
+
 # ─── Model context windows ──────────────────────────────────
 
 MODEL_CONTEXT = {
+    "claude-opus-5": 200000,
     "claude-opus-4-6": 200000,
     "claude-sonnet-4-6": 200000,
     "claude-sonnet-4-20250514": 200000,
@@ -91,6 +181,7 @@ MODEL_CONTEXT = {
     "gpt-4o": 128000,
     "gpt-4o-mini": 128000,
     "gpt-5.4": 128000,
+    "gpt-5.6-sol": 128000,
     "qwen/qwen3.5-9b": 128000,
 }
 
@@ -112,13 +203,17 @@ def _model_supports_thinking(model: str) -> bool:
 
 
 def _model_supports_adaptive_thinking(model: str) -> bool:
+    """Adaptive thinking shipped with the 4-6 generation; later Opus/Sonnet
+    releases inherit it. Unverified against the live endpoint — if a gateway
+    rejects `thinking: {"type": "adaptive"}` it fails loudly on the first call.
+    """
     m = model.lower()
-    return "opus-4-6" in m or "sonnet-4-6" in m
+    return any(x in m for x in ("opus-4-6", "sonnet-4-6", "opus-5", "sonnet-5"))
 
 
 def _get_max_output_tokens(model: str) -> int:
     m = model.lower()
-    if "opus-4-6" in m:
+    if any(x in m for x in ("opus-5", "opus-4-6")):
         return 64000
     if "sonnet-4-6" in m:
         return 32000
@@ -161,7 +256,7 @@ class Agent:
         self,
         *,
         permission_mode: str = "default",
-        model: str = "claude-opus-4-6",
+        model: str | None = None,
         backend: str | None = None,
         api_base: str | None = None,
         anthropic_base_url: str | None = None,
@@ -179,9 +274,11 @@ class Agent:
 
         self.permission_mode = permission_mode
         self.thinking = thinking
-        self.model = model
         self.backend = backend or ("openai" if api_base else "anthropic")
         self.use_openai = self.backend == "openai"
+        # The backend is resolved first so an omitted model can pick up that
+        # backend's own default instead of one shared hardcoded name.
+        self.model = resolve_default_model(self.backend, model)
         self.api_base = api_base
         self.anthropic_base_url = anthropic_base_url
         self.api_key = api_key
@@ -190,14 +287,19 @@ class Agent:
         self.max_cost_usd = max_cost_usd
         self.max_turns = max_turns
         self.confirm_fn = confirm_fn
-        self.effective_window = _get_context_window(model) - 20000
+        self.effective_window = _get_context_window(self.model) - 20000
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._last_user_preview = ""
 
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_write_tokens = 0
         self.last_input_token_count = 0
+        # Cache reads are discounted differently per backend (0.1x Anthropic vs
+        # 0.5x OpenAI), so the multiplier is resolved once here.
+        self._cache_read_discount = cache_read_discount_for(self.backend)
         self.current_turns = 0
         self.last_api_call_time = 0.0
 
@@ -331,7 +433,19 @@ class Agent:
             return "plan"
 
     def get_token_usage(self) -> dict:
-        return {"input": self.total_input_tokens, "output": self.total_output_tokens}
+        return {
+            "input": self.total_input_tokens,
+            "output": self.total_output_tokens,
+            "cache_read": self.total_cache_read_tokens,
+            "cache_write": self.total_cache_write_tokens,
+        }
+
+    async def aclose(self) -> None:
+        """Release external resources: MCP server subprocesses and HTTP clients."""
+        try:
+            await self._mcp_manager.disconnect_all()
+        except Exception:
+            pass
 
     # ─── Main entry point ────────────────────────────────────
 
@@ -372,6 +486,8 @@ class Agent:
         self._output_buffer = [] # 步骤 1：激活输出重定向缓冲区
         prev_in = self.total_input_tokens
         prev_out = self.total_output_tokens
+        prev_cache_read = self.total_cache_read_tokens
+        prev_cache_write = self.total_cache_write_tokens
         await self.chat(prompt)  # 步骤 2：直接复用主循环进行逻辑驱动
         text = "".join(self._output_buffer)  # 步骤 3：收集所有流式文本
         self._output_buffer = None  # 恢复默认打印模式
@@ -380,6 +496,8 @@ class Agent:
             "tokens": {
                 "input": self.total_input_tokens - prev_in,
                 "output": self.total_output_tokens - prev_out,
+                "cache_read": self.total_cache_read_tokens - prev_cache_read,
+                "cache_write": self.total_cache_write_tokens - prev_cache_write,
             },
         }
 
@@ -400,6 +518,8 @@ class Agent:
             self._openai_messages.append({"role": "system", "content": self._system_prompt})
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_write_tokens = 0
         self.last_input_token_count = 0
         print_info("Conversation cleared.")
 
@@ -442,10 +562,22 @@ class Agent:
         total = self._get_current_cost_usd()
         budget_info = f" / ${self.max_cost_usd} budget" if self.max_cost_usd else ""
         turn_info = f" | Turns: {self.current_turns}/{self.max_turns}" if self.max_turns else ""
-        print_info(f"Tokens: {self.total_input_tokens} in / {self.total_output_tokens} out\n  Estimated cost: ${total:.4f}{budget_info}{turn_info}")
+        usage = format_token_usage(
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_write_tokens,
+        )
+        print_info(f"{usage}\n  Estimated cost: ${total:.4f}{budget_info}{turn_info}")
 
     def _get_current_cost_usd(self) -> float:
-        return (self.total_input_tokens / 1_000_000) * 3 + (self.total_output_tokens / 1_000_000) * 15
+        return estimate_cost_usd(
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.total_cache_read_tokens,
+            self.total_cache_write_tokens,
+            self._cache_read_discount,
+        )
 
     def _check_budget(self) -> dict:
         if self.max_cost_usd is not None and self._get_current_cost_usd() >= self.max_cost_usd:
@@ -496,6 +628,8 @@ class Agent:
             self._openai_messages = []
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_write_tokens = 0
         self.last_input_token_count = 0
         self.current_turns = 0
         print_info(
@@ -559,6 +693,16 @@ class Agent:
             ],
         )
         summary_text = summary_resp.content[0].text if summary_resp.content and summary_resp.content[0].type == "text" else "No summary available."
+        # The summarizer re-reads the whole conversation, so it is the single
+        # most expensive call in a session. Booking it here keeps `--max-cost`
+        # honest. `last_input_token_count` is left to the reset below: the
+        # history is being replaced, so the old gauge no longer describes it.
+        if getattr(summary_resp, "usage", None) is not None:
+            comp_in, comp_write, comp_read = _anthropic_usage_totals(summary_resp.usage)
+            self.total_input_tokens += comp_in
+            self.total_output_tokens += summary_resp.usage.output_tokens
+            self.total_cache_write_tokens += comp_write
+            self.total_cache_read_tokens += comp_read
         self._anthropic_messages = [
             {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
             {"role": "assistant", "content": "Understood. I have the context from our previous conversation. How can I continue helping?"},
@@ -585,6 +729,13 @@ class Agent:
             ],
         )
         summary_text = summary_resp.choices[0].message.content or "No summary available."
+        # Same reasoning as _compact_anthropic: a full-history summarize call is
+        # the biggest single spend of a session and used to go unbooked.
+        if getattr(summary_resp, "usage", None) is not None:
+            comp_in, comp_out, comp_read = _openai_usage_totals(summary_resp.usage)
+            self.total_input_tokens += comp_in
+            self.total_output_tokens += comp_out
+            self.total_cache_read_tokens += comp_read
         self._openai_messages = [
             system_msg,
             {"role": "user", "content": f"[Previous conversation summary]\n{summary_text}"},
@@ -747,6 +898,17 @@ class Agent:
 
     # ─── Execute tool (handles agent/skill/plan mode internally) ─────
 
+    def _is_concurrency_safe(self, name: str) -> bool:
+        """Whether a tool may start executing while the model is still streaming.
+
+        Built-in read-only tools always qualify. MCP tools qualify only when
+        their server is declared "readOnly": true in .mcp.json — an MCP tool can
+        have arbitrary side effects, so parallelism there is opt-in.
+        """
+        if name in CONCURRENCY_SAFE_TOOLS:
+            return True
+        return self._mcp_manager.is_concurrency_safe(name)
+
     async def _execute_tool_call(self, name: str, inp: dict) -> str:
         if name in ("enter_plan_mode", "exit_plan_mode"):
             return await self._execute_plan_mode_tool(name)
@@ -789,6 +951,8 @@ class Agent:
                 sub_result = await sub_agent.run_once(inp.get("args") or "Execute this skill task.")
                 self.total_input_tokens += sub_result["tokens"]["input"]
                 self.total_output_tokens += sub_result["tokens"]["output"]
+                self.total_cache_read_tokens += sub_result["tokens"].get("cache_read", 0)
+                self.total_cache_write_tokens += sub_result["tokens"].get("cache_write", 0)
                 print_sub_agent_end("skill-fork", inp.get("skill_name", ""))
                 return sub_result["text"] or "(Skill produced no output)"
             except Exception as e:
@@ -912,6 +1076,8 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         if self.use_openai:
             self._openai_messages.append({"role": "system", "content": self._system_prompt})
         self.last_input_token_count = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_write_tokens = 0
 
     async def _execute_agent_tool(self, inp: dict) -> str:
         agent_type = inp.get("type", "general")
@@ -937,6 +1103,8 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             result = await sub_agent.run_once(prompt)
             self.total_input_tokens += result["tokens"]["input"]
             self.total_output_tokens += result["tokens"]["output"]
+            self.total_cache_read_tokens += result["tokens"].get("cache_read", 0)
+            self.total_cache_write_tokens += result["tokens"].get("cache_write", 0)
             print_sub_agent_end(agent_type, description)
             return result["text"] or "(Sub-agent produced no output)"
         except Exception as e:
@@ -1001,7 +1169,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             early_executions: dict[str, asyncio.Task] = {}
 
             def _on_tool_block(block: dict):
-                if block["name"] in CONCURRENCY_SAFE_TOOLS:
+                if self._is_concurrency_safe(block["name"]):
                     perm = check_permission(block["name"], block["input"], self.permission_mode, self._plan_file_path)
                     if perm["action"] == "allow":
                         task = asyncio.create_task(self._execute_tool_call(block["name"], block["input"]))
@@ -1013,9 +1181,12 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                 stop_spinner()
 
             self.last_api_call_time = time.time()
-            self.total_input_tokens += response.usage.input_tokens
+            input_tokens, cache_write, cache_read = _anthropic_usage_totals(response.usage)
+            self.total_input_tokens += input_tokens
             self.total_output_tokens += response.usage.output_tokens
-            self.last_input_token_count = response.usage.input_tokens
+            self.total_cache_write_tokens += cache_write
+            self.total_cache_read_tokens += cache_read
+            self.last_input_token_count = input_tokens
 
             tool_uses = [b for b in response.content if b.type == "tool_use"]
 
@@ -1026,7 +1197,13 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
 
             if not tool_uses:
                 if not self.is_sub_agent:
-                    print_cost(self.total_input_tokens, self.total_output_tokens)
+                    print_cost(
+                        self.total_input_tokens,
+                        self.total_output_tokens,
+                        self.total_cache_read_tokens,
+                        self.total_cache_write_tokens,
+                        self._cache_read_discount,
+                    )
                 break
 
             self.current_turns += 1
@@ -1219,10 +1396,16 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
 
             self.last_api_call_time = time.time()
 
-            if response.get("usage"):
-                self.total_input_tokens += response["usage"]["prompt_tokens"]
-                self.total_output_tokens += response["usage"]["completion_tokens"]
-                self.last_input_token_count = response["usage"]["prompt_tokens"]
+            usage = response.get("usage")
+            if usage is not None:
+                input_tokens, output_tokens, cache_read = _openai_usage_totals(usage)
+                self.total_input_tokens += input_tokens
+                self.total_output_tokens += output_tokens
+                self.total_cache_read_tokens += cache_read
+                # `prompt_tokens` is already the full prompt, cached prefix
+                # included — this is the one line that differs from the
+                # Anthropic branch, where the cache read has to be added in.
+                self.last_input_token_count = input_tokens
 
             choice = response.get("choices", [{}])[0] if response.get("choices") else {}
             message = choice.get("message", {})
@@ -1232,7 +1415,13 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 if not self.is_sub_agent:
-                    print_cost(self.total_input_tokens, self.total_output_tokens)
+                    print_cost(
+                        self.total_input_tokens,
+                        self.total_output_tokens,
+                        self.total_cache_read_tokens,
+                        self.total_cache_write_tokens,
+                        self._cache_read_discount,
+                    )
                 break
 
             self.current_turns += 1
@@ -1328,11 +1517,10 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             usage = None
 
             async for chunk in stream:
-                if chunk.usage:
-                    usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                    }
+                # Keep the raw SDK usage object: the cached-prompt count lives in
+                # a nested details object that a flat dict copy would drop.
+                if chunk.usage is not None:
+                    usage = chunk.usage
 
                 if not chunk.choices:
                     continue
@@ -1378,7 +1566,10 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                     },
                     "finish_reason": finish_reason or "stop",
                 }],
-                "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0},
+                # None, not zeros: a gateway that ignores `include_usage` used to
+                # hand back 0/0, which overwrote `last_input_token_count` with 0
+                # and silently froze auto-compaction. Better to book nothing.
+                "usage": usage,
             }
 
         return await _with_retry(_do)

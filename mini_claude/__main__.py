@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .agent import Agent
+from .agent import Agent, BACKEND_MODEL_ENV, default_model_for
 from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
 from .session import load_session, get_latest_session_id, list_sessions
 from .memory import list_memories
@@ -112,6 +112,29 @@ def _resolve_api_config(args: argparse.Namespace) -> tuple[str, str | None, str 
         # The OpenAI SDK uses its official endpoint when base_url is omitted.
         return "openai", openai_key, None
     return "anthropic", None, anthropic_base
+
+
+def _resolve_model(args: argparse.Namespace, backend: str) -> tuple[str, str]:
+    """Resolve the model for ``backend``, plus a label saying where it came from.
+
+    Precedence: ``--model`` > ``MINI_CLAUDE_MODEL`` (global, every backend) >
+    ``ANTHROPIC_MODEL`` / ``OPENAI_MODEL`` (that backend only) > the built-in
+    default for that backend. The backend has to be resolved first for a
+    per-backend default to exist at all: the previous code inferred "the user
+    did not pick a model" by comparing the name against a hardcoded Claude id,
+    which also silently rewrote an *explicit* ``--model claude-...`` on the
+    OpenAI backend.
+    """
+    global_env = os.environ.get("MINI_CLAUDE_MODEL", "").strip()
+    backend_env_name = BACKEND_MODEL_ENV[backend]
+    backend_env = os.environ.get(backend_env_name, "").strip()
+    if args.model:
+        return args.model, "--model"
+    if global_env:
+        return global_env, "MINI_CLAUDE_MODEL"
+    if backend_env:
+        return backend_env, backend_env_name
+    return default_model_for(backend), f"default for {backend}"
 
 
 async def run_repl(agent: Agent, prompt_session=None) -> None:
@@ -401,7 +424,43 @@ def _restore_agent_session(agent: Agent, session_id: str) -> None:
     agent.restore_session(session)
 
 
+async def _run_once(agent: Agent, prompt: str) -> None:
+    """One-shot mode. Always tears down MCP server processes on the way out."""
+    try:
+        await agent.chat(prompt)
+    finally:
+        await agent.aclose()
+
+
+async def _run_repl_session(agent: Agent) -> None:
+    """Interactive REPL. Always tears down MCP server processes on the way out."""
+    try:
+        await run_repl(agent)
+    finally:
+        await agent.aclose()
+
+
+def _force_utf8_stdio() -> None:
+    """Write UTF-8 regardless of the terminal's locale.
+
+    On Windows Python only uses UTF-8 for the *console*; as soon as stdout is a
+    pipe or a file it falls back to the locale code page (cp936 on a Chinese
+    system), so `mini-claude "..." > log.txt` turns every non-ASCII character
+    into mojibake. The console path is already UTF-8, so reconfiguring is a
+    no-op there and only fixes the redirected case.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # exotic or detached stream — nothing to reconfigure
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _force_utf8_stdio()
     args = parse_args()
     _load_project_env(env_file=args.env_file)
 
@@ -415,7 +474,9 @@ Options:
   --accept-edits      Auto-approve file edits, still confirm dangerous shell
   --dont-ask          Auto-deny anything needing confirmation (for CI)
   --thinking          Enable extended thinking (Anthropic only)
-  --model, -m         Model to use (default: claude-opus-4-6, or MINI_CLAUDE_MODEL env)
+  --model, -m         Model to use (default per backend: anthropic=claude-opus-5,
+                      openai=gpt-5.6-sol; override with MINI_CLAUDE_MODEL for all
+                      backends, or ANTHROPIC_MODEL / OPENAI_MODEL for one)
   --api-base URL      Use OpenAI-compatible API endpoint (key via env var)
   --env-file PATH     Read env vars from PATH instead of searching for .env
   --resume            Resume the last session
@@ -449,9 +510,9 @@ Examples:
         sys.exit(0)
 
     permission_mode = _resolve_permission_mode(args)
-    model = args.model or os.environ.get("MINI_CLAUDE_MODEL", "claude-opus-4-6")
     resolved_backend, resolved_api_key, resolved_api_base = _resolve_api_config(args)
-    
+    model, model_source = _resolve_model(args, resolved_backend)
+
     if not resolved_api_key:
         searched = "\n".join(f"    {path}" for path in _dotenv_candidates(args.env_file))
         print_error(
@@ -462,10 +523,7 @@ Examples:
             f"{searched}"
         )
         sys.exit(1)
-    
-    # 如果用户选了 OpenAI 后端，但是模型名字还是默认的 Claude，则自动帮其修正为通用的 gpt-5.4
-    if resolved_backend == "openai" and model == "claude-opus-4-6":
-        model = "gpt-5.4"
+
     agent = Agent(
         permission_mode=permission_mode,
         model=model,
@@ -477,6 +535,7 @@ Examples:
         anthropic_base_url=resolved_api_base if resolved_backend == "anthropic" else None,
         api_key=resolved_api_key,
     )
+    print_info(f"Backend: {agent.backend} | model: {agent.model} ({model_source})")
 
     # Resume session
     if args.resume:
@@ -498,13 +557,13 @@ Examples:
     if prompt:
         # One-shot mode
         try:
-            asyncio.run(agent.chat(prompt))
+            asyncio.run(_run_once(agent, prompt))
         except Exception as e:
             print_error(str(e))
             sys.exit(1)
     else:
         # Interactive REPL
-        asyncio.run(run_repl(agent))
+        asyncio.run(_run_repl_session(agent))
 
 
 if __name__ == "__main__":

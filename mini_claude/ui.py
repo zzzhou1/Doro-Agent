@@ -81,11 +81,83 @@ def print_divider() -> None:
     console.print(f"\n[dim]  {'─' * 50}[/dim]")
 
 
-def print_cost(input_tokens: int, output_tokens: int) -> None:
-    cost_in = (input_tokens / 1_000_000) * 3
-    cost_out = (output_tokens / 1_000_000) * 15
-    total = cost_in + cost_out
-    console.print(f"\n[dim]  Tokens: {input_tokens} in / {output_tokens} out (~${total:.4f})[/dim]")
+# USD per million tokens. Anthropic bills prompt-cache *writes* at 1.25x the
+# input rate, which is why the cached portion is priced apart from fresh input
+# instead of being lumped in at the full rate.
+PRICE_INPUT_PER_M = 3.0
+PRICE_CACHE_WRITE_PER_M = 3.75
+PRICE_OUTPUT_PER_M = 15.0
+
+# Cache *reads* are discounted by provider, and the multipliers differ enough to
+# matter: Anthropic reads cached input at 0.1x the input rate, OpenAI-compatible
+# endpoints at 0.5x. Pricing an OpenAI cache read at Anthropic's 0.1x would
+# understate real spend by 5x, so the multiplier travels with the backend rather
+# than being baked into a single constant.
+CACHE_READ_DISCOUNT = {"anthropic": 0.1, "openai": 0.5}
+DEFAULT_CACHE_READ_DISCOUNT = 0.1
+
+
+def cache_read_discount_for(backend: str) -> float:
+    """Cache-read discount multiplier for a backend id (``openai``/``anthropic``)."""
+    return CACHE_READ_DISCOUNT.get(backend, DEFAULT_CACHE_READ_DISCOUNT)
+
+
+def estimate_cost_usd(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    cache_read_discount: float = DEFAULT_CACHE_READ_DISCOUNT,
+) -> float:
+    """Estimated spend.
+
+    ``input_tokens`` is the *total* input — the cached portion is included and
+    then discounted here, because callers track one input number (that is what
+    the context-window accounting needs) rather than two.
+    """
+    fresh = max(input_tokens - cache_read_tokens - cache_write_tokens, 0)
+    return (
+        fresh * PRICE_INPUT_PER_M
+        + cache_write_tokens * PRICE_CACHE_WRITE_PER_M
+        + cache_read_tokens * PRICE_INPUT_PER_M * cache_read_discount
+        + output_tokens * PRICE_OUTPUT_PER_M
+    ) / 1_000_000
+
+
+def format_token_usage(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> str:
+    """``Tokens: 8814 in (8814 cached) / 2 out``.
+
+    The cached marker matters: a cached prompt reports a near-zero fresh input
+    count, which looks like a bug unless the cached tokens are shown next to it.
+    """
+    cached = cache_read_tokens + cache_write_tokens
+    suffix = f" ({cached} cached)" if cached else ""
+    return f"Tokens: {input_tokens} in{suffix} / {output_tokens} out"
+
+
+def print_cost(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    cache_read_discount: float = DEFAULT_CACHE_READ_DISCOUNT,
+) -> None:
+    total = estimate_cost_usd(
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cache_read_discount,
+    )
+    usage = format_token_usage(
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    )
+    console.print(f"\n[dim]  {usage} (~${total:.4f})[/dim]")
 
 
 def print_retry(attempt: int, max_retries: int, reason: str) -> None:

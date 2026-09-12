@@ -12,6 +12,7 @@ import pytest
 
 from mini_claude.__main__ import (
     _load_project_env,
+    _force_utf8_stdio,
     _resolve_model_selector,
     _resolve_api_config,
     _resolve_session_selector,
@@ -25,6 +26,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _args(api_base: str | None = None) -> Namespace:
     return Namespace(api_base=api_base)
+
+
+def test_force_utf8_stdio_tolerates_streams_without_reconfigure() -> None:
+    """pytest's capture object, pipes, and mocks have no reconfigure()."""
+    with patch.object(sys, "stdout", Mock(spec=[])), patch.object(sys, "stderr", Mock(spec=[])):
+        _force_utf8_stdio()  # must not raise
+
+
+def test_redirected_output_is_utf8_without_utf8_mode(tmp_path) -> None:
+    """Redirecting stdout must not fall back to the locale code page.
+
+    Windows only uses UTF-8 for the console; a pipe or file gets the ANSI code
+    page (cp936 here), which garbles every non-ASCII character. The sandbox sets
+    PYTHONUTF8/PYTHONIOENCODING, so they are removed to exercise the real path.
+    """
+    env = os.environ.copy()
+    env.pop("PYTHONUTF8", None)
+    env.pop("PYTHONIOENCODING", None)
+    code = (
+        "from mini_claude.__main__ import _force_utf8_stdio;"
+        "_force_utf8_stdio();"
+        "import sys; sys.stdout.write('你好')"
+    )
+    out = tmp_path / "out.bin"
+    with open(out, "wb") as fh:
+        subprocess.run(
+            [sys.executable, "-c", code],
+            stdout=fh, stderr=subprocess.DEVNULL, env=env, cwd=str(ROOT), check=True,
+        )
+
+    assert out.read_bytes() == "你好".encode("utf-8")
 
 
 def test_console_script_metadata_matches_documentation() -> None:

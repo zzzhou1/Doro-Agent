@@ -75,7 +75,7 @@ python -m pip install -e ".[test]"
 pytest
 ```
 
-42 项测试应当全部通过。测试**不需要任何 API Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
+全部测试应当通过（当前 93 项）。测试**不需要任何 API Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
 
 ## 使用 `.env` 配置
 
@@ -90,7 +90,7 @@ OpenAI 示例：
 ```dotenv
 OPENAI_API_KEY=your-key
 OPENAI_BASE_URL=https://your-provider.example/v1
-MINI_CLAUDE_MODEL=gpt-4o
+OPENAI_MODEL=gpt-4o
 ```
 
 Anthropic 示例：
@@ -98,8 +98,10 @@ Anthropic 示例：
 ```dotenv
 ANTHROPIC_API_KEY=your-key
 ANTHROPIC_BASE_URL=
-MINI_CLAUDE_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-opus-5
 ```
+
+**模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型，优先用按后端的 `ANTHROPIC_MODEL` / `OPENAI_MODEL`；**`MINI_CLAUDE_MODEL` 对全部后端生效**，会把一个服务商的模型名带到另一个上，只在确认只跑单一后端时才用。
 
 `.env` 已被 Git 忽略。
 
@@ -139,7 +141,13 @@ $env:OPENAI_BASE_URL = "https://your-provider.example/v1"
 mini-claude --model your-model "hello"
 ```
 
-也可以用 `--api-base` 临时覆盖 OpenAI-compatible 地址。模型可通过 `--model` 或 `MINI_CLAUDE_MODEL` 指定。
+也可以用 `--api-base` 临时覆盖 OpenAI-compatible 地址。
+
+模型解析优先级：`--model` > `MINI_CLAUDE_MODEL`（所有后端）> `ANTHROPIC_MODEL` / `OPENAI_MODEL`（仅该后端）> 该后端的内置默认。启动时首行会打印实际生效的后端与模型，例如：
+
+```text
+ℹ Backend: openai | model: gpt-5.6-sol (default for openai)
+```
 
 ## 常用参数
 
@@ -149,6 +157,7 @@ mini-claude --model your-model "hello"
 --accept-edits      自动批准文件编辑
 --dont-ask          自动拒绝需要确认的操作
 --thinking          启用 Anthropic 扩展思考
+--model, -m NAME    指定模型（不写则用该后端的内置默认）
 --env-file PATH     指定 .env 文件，跳过自动查找
 --resume            恢复最近会话
 --max-cost USD      限制累计费用
@@ -173,6 +182,17 @@ mini-claude --model your-model "hello"
 ```
 
 `/model` 会调用当前后端的模型列表接口。若 OpenAI-compatible 服务没有实现该接口，仍可使用 `/model <模型名>` 直接切换。切换只改变模型，不会改变 OpenAI/Anthropic 后端。
+
+每轮结束打印的 `Tokens:` 是**总输入**，包含命中 prompt cache 的部分并标注 `(N cached)`。两个后端对"总输入"的定义恰好相反，必须分开处理：
+
+- **Anthropic**：`input_tokens` 只是**未命中缓存**的那部分，真正的输入要三项相加（`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`）。命中缓存时 `input_tokens` 会是 0。
+- **OpenAI-compatible**：`prompt_tokens` **本身就是全部输入**，缓存过的前缀是它的子集，单独放在 `prompt_tokens_details.cached_tokens`。这里**不能相加**，否则会重复计数、把上下文占用算高。
+
+这个数同时决定自动压缩何时触发，算错会导致长对话撞上下文上限。费用估算按缓存读的折扣折算：Anthropic 0.1x、OpenAI 0.5x（缓存写 1.25x，仅 Anthropic 计费）。
+
+是否命中缓存由服务端决定，客户端无法保证：同一个请求可能这次命中、下次不命中（经多上游轮询的网关尤其如此），这里只如实显示服务端报回的命中量。没有 `(N cached)` 标记不代表代码有问题，而是这一次没命中。
+
+标准输出固定按 UTF-8 编码，重定向到文件也是如此，不随系统区域设置（Windows 上默认是 ANSI 代码页，如 cp936）变化。
 
 交互输入支持 `/` 命令自动补全：在行首输入 `/` 会立即显示内置命令和可调用 skill，继续输入可缩小范围，也可按 Tab 补全。主对话提示符支持用上下方向键查看最近输入；历史保存在 `~/.mini-claude/input_history`，重启程序后仍然可用。`/model`、`/session` 和 `/resume` 会直接在输出位置绘制可选列表，用上下方向键移动高亮项、Enter 确认、Esc 取消，不会另外打开侧边候选面板。
 
@@ -201,7 +221,36 @@ mini-claude --model your-model "hello"
 
 > **复现提示**：用户级目录会显著影响功能表现。如果本机装过 Claude Code 并配置了 skills 或 MCP，`/skills` 列出的内容与权限行为会和别人**不一致**；反之在干净机器上这些目录为空，相关功能会"看起来不存在"。想确认自己的环境，请对照上面两份清单逐项检查。
 
-MCP 客户端可以启动任意 stdio MCP server。只有当你的 MCP 配置本身使用 Node.js 时，才需要安装 Node.js。
+### MCP server 配置
+
+在 `.mcp.json`（或任一 settings.json 的 `mcpServers` 段）里登记。每个 server 二选一：
+
+**stdio（本地进程）**
+
+```json
+{ "mcpServers": { "amap": {
+    "command": "npx.cmd", "args": ["-y", "@amap/amap-maps-mcp-server"],
+    "env": { "AMAP_MAPS_API_KEY": "..." } } } }
+```
+
+**HTTP（远程服务）** —— 默认 Streamable HTTP，遇到 404/405/406/415 会自动降级到旧版 HTTP+SSE
+
+```json
+{ "mcpServers": { "remote": {
+    "url": "https://host/mcp",
+    "headers": { "Authorization": "Bearer ..." },
+    "transport": "auto" } } }
+```
+
+可选调优：`connectTimeout`（默认 15s，覆盖 connect / initialize / tools-list）、`toolTimeout`（默认 60s，单次 tools/call 的上限，超时不会拖死 agent）、`readOnly`（声明该 server 只读，其工具才允许与其他工具并行执行）、`minInterval` / `maxQps`（限制同一 server 的调用频率，见下）。
+
+> **上游限流**：不少托管服务按 API key 限流（高德是 3 QPS）。并行调用的协议层面没问题，但会被上游拒绝。给这类 server 配上 `"maxQps": 3`（或等价的 `"minInterval": 0.34`），客户端会在**每次调用开始之间**留出间隔 —— 既守住限流窗口，又不影响请求本身的并发重叠。不配则完全不限速。
+
+工具以 `mcp__<server>__<tool>` 暴露给模型。server 名只能含字母数字、下划线和连字符，且不能出现 `__`；拼出的工具名需 ≤ 64 字符，不合规的名字会被跳过并打印原因。
+
+> **Windows 注意**：`.cmd` / `.bat` 包装器必须写全扩展名（`npx.cmd`，不能写 `npx`）—— 创建进程时不走 PATHEXT 补全。`uvx` / `node` / `python` 是真 `.exe`，可省略扩展名。如果 MCP 配置本身用 Node.js 才需要装 Node.js。
+
+> **第 0 次启动**：`npx -y` 要先下载包，可能超过 `connectTimeout`。先手动跑一次预热缓存即可。
 
 ## 本地状态（无需复现）
 
@@ -240,7 +289,7 @@ mini_claude/
 ├── memory.py        记忆系统
 ├── skills.py        技能系统
 ├── subagent.py      子 Agent
-├── mcp_client.py    MCP stdio 客户端
+├── mcp_client.py    MCP 客户端（stdio + HTTP/SSE）
 ├── frontmatter.py   Frontmatter 解析
 └── ui.py            终端 UI
 ```
