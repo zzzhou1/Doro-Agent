@@ -2,19 +2,61 @@
 
 一个从零实现的轻量级 Coding Agent。项目现为纯 Python 版本，不需要 Node.js 或 npm。
 
+## 快速开始
+
+```powershell
+# 1. 创建环境并安装（推荐 uv，依赖版本严格等于 uv.lock）
+uv sync --extra test
+
+# 2. 配置 API Key
+Copy-Item .env.example .env
+# 编辑 .env，只填一个服务商的 Key
+
+# 3. 验证：测试应全部通过，不需要 API Key
+uv run pytest
+
+# 4. 运行
+uv run mini-claude
+```
+
 ## 环境要求
 
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/)（推荐）或 pip，二选一
 - Anthropic API Key，或 OpenAI / OpenAI-compatible API Key
+
+### 一定要用 uv 吗
+
+不是。uv 只是一个包管理器，`pip` 同样能跑全部功能。区别只在于依赖版本能否被精确复现：
+
+| 安装方式 | 需要额外装什么 | 依赖版本 |
+| --- | --- | --- |
+| `uv sync` | uv（单个二进制） | 严格等于 `uv.lock` 锁定的 32 个包 |
+| `pip install -e .` | 无，Python 自带 pip | 落在 `pyproject.toml` 的版本范围内，可能和锁定版本不同 |
+
+`uv.lock` 只对 uv 生效，pip 会完全忽略它。想要和别人装到一模一样的依赖，就用 uv。
 
 ## 安装
 
-推荐使用独立虚拟环境：
+### 方式一：uv（推荐）
+
+```powershell
+uv sync --extra test
+```
+
+该命令会创建 `.venv` 并按 `uv.lock` 安装锁定版本。之后的命令统一加 `uv run` 前缀：
+
+```powershell
+uv run mini-claude
+uv run python -m mini_claude
+```
+
+### 方式二：pip
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
+python -m pip install -e ".[test]"
 ```
 
 macOS / Linux：
@@ -22,10 +64,18 @@ macOS / Linux：
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e ".[test]"
 ```
 
 安装完成后可使用 `mini-claude`，也可直接使用 `python -m mini_claude`。
+
+## 验证安装
+
+```powershell
+pytest
+```
+
+42 项测试应当全部通过。测试**不需要任何 API Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
 
 ## 使用 `.env` 配置
 
@@ -51,7 +101,18 @@ ANTHROPIC_BASE_URL=
 MINI_CLAUDE_MODEL=claude-sonnet-4-6
 ```
 
-`.env` 已被 Git 忽略。配置优先级为：命令行参数、当前终端环境变量、`.env`、程序默认值。
+`.env` 已被 Git 忽略。
+
+程序按以下顺序查找 `.env`，**首个命中者生效**（先找到的值优先，不会被后续文件覆盖）：
+
+1. `--env-file PATH` 指定的文件
+2. 当前工作目录的 `.env`
+3. 本包源码树根目录的 `.env`
+4. `~/.mini-claude/.env`
+
+因此，即使在项目目录之外运行 `mini-claude` 也能正确读取配置；想给某个项目单独换一套 Key，在该项目目录放一个 `.env` 即可。
+
+终端里已设置的环境变量**始终优先于所有 `.env` 文件**。
 
 ## 配置与运行
 
@@ -88,6 +149,7 @@ mini-claude --model your-model "hello"
 --accept-edits      自动批准文件编辑
 --dont-ask          自动拒绝需要确认的操作
 --thinking          启用 Anthropic 扩展思考
+--env-file PATH     指定 .env 文件，跳过自动查找
 --resume            恢复最近会话
 --max-cost USD      限制累计费用
 --max-turns N       限制 Agent 轮次
@@ -116,29 +178,54 @@ mini-claude --model your-model "hello"
 
 恢复会话时会自动恢复该会话保存的模型，并继续使用原会话 ID。当前版本只允许在同一 API 后端内恢复；例如，用 OpenAI 后端启动时不会列出或恢复 Anthropic 会话。会话列表还会按当前工作目录隔离。
 
-## 可选项目配置
+## 运行时读取的目录
 
-程序会从当前工作目录读取以下可选配置；它们不属于本包的必需文件：
+程序会读取**项目级**和**用户级**两处配置，它们都不属于本包的必需文件。
 
-- `CLAUDE.md` 和 `.claude/rules/*.md`
+### 项目级（相对当前工作目录，`CLAUDE.md` 会向上逐级查找）
+
+- `CLAUDE.md`
+- `.claude/rules/*.md`
 - `.claude/skills/*/SKILL.md`
 - `.claude/agents/*.md`
-- `.claude/settings.json` 和 `.mcp.json`
+- `.claude/settings.json`
+- `.mcp.json`
+
+### 用户级（用户主目录，对该用户的所有项目生效）
+
+- `~/.claude/skills/*/SKILL.md`
+- `~/.claude/agents/*.md`
+- `~/.claude/settings.json`（MCP server 与权限规则）
+- `~/.claude/plans/`
+- `~/.mini-claude/.env`（用户级兜底配置）
+
+> **复现提示**：用户级目录会显著影响功能表现。如果本机装过 Claude Code 并配置了 skills 或 MCP，`/skills` 列出的内容与权限行为会和别人**不一致**；反之在干净机器上这些目录为空，相关功能会"看起来不存在"。想确认自己的环境，请对照上面两份清单逐项检查。
 
 MCP 客户端可以启动任意 stdio MCP server。只有当你的 MCP 配置本身使用 Node.js 时，才需要安装 Node.js。
+
+## 本地状态（无需复现）
+
+以下内容是按项目和机器隔离的运行时数据，由程序自动生成，别人 clone 后为空属正常现象：
+
+- `~/.mini-claude/sessions/` — 会话历史
+- `~/.mini-claude/projects/<hash>/memory/` — 长期记忆
+- `~/.mini-claude/input_history` — REPL 输入历史
+- `~/.mini-claude/tool-results/` — 工具输出缓存
+
+它们不在仓库中，也不需要提交。
 
 ## 开发与测试
 
 ```powershell
-python -m pip install -e ".[test]"
-python -m pytest
-python -m mini_claude --help
+uv sync --extra test                  # 或用 pip：python -m pip install -e ".[test]"
+uv run pytest
+uv run python -m mini_claude --help
 ```
 
 测试不需要真实 API Key。真实 API smoke test 可自行配置 Key 后运行：
 
 ```powershell
-mini-claude --max-turns 1 "Reply with exactly OK"
+uv run mini-claude --max-turns 1 "Reply with exactly OK"
 ```
 
 ## 源码结构
