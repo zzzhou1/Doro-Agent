@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from .agent import Agent
 from .ui import print_welcome, print_user_prompt, print_error, print_info, print_plan_for_approval, print_plan_approval_options
-from .session import load_session, get_latest_session_id
+from .session import load_session, get_latest_session_id, list_sessions
 from .memory import list_memories
 from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
 
@@ -161,6 +161,51 @@ async def run_repl(agent: Agent) -> None:
         if inp == "/cost":
             agent.show_cost()
             continue
+        if inp == "/model":
+            print_info(f"Backend: {agent.backend} | Model: {agent.model}")
+            continue
+        if inp.startswith("/model "):
+            try:
+                old_model = agent.model
+                new_model = agent.switch_model(inp[len("/model "):])
+                print_info(
+                    f"Model switched: {old_model} → {new_model} "
+                    f"(backend remains {agent.backend})"
+                )
+            except ValueError as e:
+                print_error(str(e))
+            continue
+        if inp == "/sessions":
+            _print_session_list(_sessions_for_agent(agent))
+            continue
+        if inp == "/resume" or inp.startswith("/resume "):
+            selector = inp[len("/resume"):].strip()
+            sessions = _sessions_for_agent(agent)
+            if not selector:
+                if not sessions:
+                    print_info("No sessions found for this project and backend.")
+                    continue
+                _print_session_list(sessions)
+                try:
+                    selector = input("  Resume session number or ID (Enter to cancel): ").strip()
+                except EOFError:
+                    selector = ""
+                if not selector:
+                    continue
+            try:
+                session_id = _resolve_session_selector(selector, sessions)
+                if agent.has_conversation_history():
+                    try:
+                        answer = input("  Replace the current conversation? (y/n): ").strip()
+                    except EOFError:
+                        answer = "n"
+                    if not answer.lower().startswith("y"):
+                        print_info("Resume cancelled.")
+                        continue
+                _restore_agent_session(agent, session_id)
+            except ValueError as e:
+                print_error(str(e))
+            continue
         if inp == "/compact":
             try:
                 await agent.compact()
@@ -216,6 +261,53 @@ async def run_repl(agent: Agent) -> None:
                 print_error(str(e))
 
 
+def _sessions_for_agent(agent: Agent) -> list[dict]:
+    return list_sessions(cwd=Path.cwd(), backend=agent.backend)
+
+
+def _print_session_list(sessions: list[dict]) -> None:
+    if not sessions:
+        print_info("No sessions found for this project and backend.")
+        return
+    print_info(f"Sessions for this project ({len(sessions)}):")
+    for index, metadata in enumerate(sessions, start=1):
+        updated = metadata.get("updatedAt") or metadata.get("startTime") or "unknown time"
+        model = metadata.get("model") or "unknown model"
+        count = metadata.get("messageCount", 0)
+        preview = metadata.get("preview") or "(no preview)"
+        print(
+            f"    {index:>2}. {metadata.get('id', '?')} | {updated} | "
+            f"{model} | {count} messages | {preview}"
+        )
+
+
+def _resolve_session_selector(selector: str, sessions: list[dict]) -> str:
+    matching_ids = {str(item.get("id")) for item in sessions if item.get("id")}
+    if selector in matching_ids:
+        return selector
+    if selector.isdigit():
+        index = int(selector)
+        if 1 <= index <= len(sessions):
+            session_id = sessions[index - 1].get("id")
+            if session_id:
+                return str(session_id)
+        raise ValueError(f"Session number out of range: {selector}")
+    raise ValueError("Session not found for this project and backend")
+
+
+def _restore_agent_session(agent: Agent, session_id: str) -> None:
+    session = load_session(session_id)
+    if session is None:
+        raise ValueError(f"Session not found or unreadable: {session_id}")
+    metadata = session.get("metadata") or {}
+    if metadata.get("id") != session_id:
+        raise ValueError("Session metadata ID does not match its file name")
+    stored_cwd = metadata.get("cwd")
+    if stored_cwd and os.path.normcase(str(Path(stored_cwd).resolve())) != os.path.normcase(str(Path.cwd().resolve())):
+        raise ValueError("Session belongs to a different project directory")
+    agent.restore_session(session)
+
+
 def main() -> None:
     _load_project_env()
     args = parse_args()
@@ -241,6 +333,10 @@ REPL commands:
   /clear              Clear conversation history
   /plan               Toggle plan mode (read-only <-> normal)
   /cost               Show token usage and cost
+  /model              Show the current backend and model
+  /model NAME         Switch model within the current backend
+  /sessions           List sessions for this project and backend
+  /resume [N|ID]      Select and resume a saved session
   /compact            Manually compact conversation
   /memory             List saved memories
   /skills             List available skills
@@ -286,14 +382,14 @@ Examples:
 
     # Resume session
     if args.resume:
-        session_id = get_latest_session_id()
+        session_id = get_latest_session_id(cwd=Path.cwd(), backend=agent.backend)
         if session_id:
             session = load_session(session_id)
             if session:
-                agent.restore_session({
-                    "anthropicMessages": session.get("anthropicMessages"),
-                    "openaiMessages": session.get("openaiMessages"),
-                })
+                try:
+                    agent.restore_session(session)
+                except ValueError as e:
+                    print_error(str(e))
             else:
                 print_info("No session found to resume.")
         else:

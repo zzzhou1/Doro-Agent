@@ -193,6 +193,7 @@ class Agent:
         self.effective_window = _get_context_window(model) - 20000
         self.session_id = uuid.uuid4().hex[:8]
         self.session_start_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self._last_user_preview = ""
 
         self.total_input_tokens = 0
         self.total_output_tokens = 0
@@ -335,6 +336,7 @@ class Agent:
     # ─── Main entry point ────────────────────────────────────
 
     async def chat(self, user_message: str) -> None:
+        self._last_user_preview = " ".join(user_message.split())[:120]
         # Lazily connect to MCP servers on first chat (main agent only)
         # 步骤 A：懒加载 MCP 客户端（仅主 Agent 触发）
         if not self._mcp_initialized and not self.is_sub_agent:
@@ -401,6 +403,21 @@ class Agent:
         self.last_input_token_count = 0
         print_info("Conversation cleared.")
 
+    def switch_model(self, model: str) -> str:
+        """Switch models without changing the configured API backend."""
+        model = model.strip()
+        if not model:
+            raise ValueError("Model name cannot be empty")
+        self.model = model
+        self.effective_window = _get_context_window(model) - 20000
+        self._thinking_mode = self._resolve_thinking_mode()
+        return self.model
+
+    def has_conversation_history(self) -> bool:
+        if self.use_openai:
+            return any(message.get("role") != "system" for message in self._openai_messages)
+        return bool(self._anthropic_messages)
+
     def show_cost(self) -> None:
         total = self._get_current_cost_usd()
         budget_info = f" / ${self.max_cost_usd} budget" if self.max_cost_usd else ""
@@ -423,24 +440,66 @@ class Agent:
     # ─── Session ──────────────────────────────────────────────
 
     def restore_session(self, data: dict) -> None:
-        if data.get("anthropicMessages"):
-            self._anthropic_messages = data["anthropicMessages"]
-        if data.get("openaiMessages"):
-            self._openai_messages = data["openaiMessages"]
-        print_info(f"Session restored ({self._get_message_count()} messages).")
+        metadata = data.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            raise ValueError("Session metadata is invalid")
+        stored_backend = metadata.get("backend")
+        if stored_backend is None:
+            if data.get("openaiMessages") is not None:
+                stored_backend = "openai"
+            elif data.get("anthropicMessages") is not None:
+                stored_backend = "anthropic"
+        if stored_backend and stored_backend != self.backend:
+            raise ValueError(
+                f"Session uses {stored_backend}, but the current backend is {self.backend}. "
+                "Cross-backend resume is not supported."
+            )
+
+        messages_key = "openaiMessages" if self.use_openai else "anthropicMessages"
+        messages = data.get(messages_key)
+        if not isinstance(messages, list):
+            raise ValueError(f"Session has no {self.backend} conversation history")
+
+        stored_model = metadata.get("model")
+        if stored_model:
+            self.switch_model(str(stored_model))
+        stored_id = metadata.get("id")
+        if stored_id:
+            self.session_id = str(stored_id)
+        self.session_start_time = metadata.get("startTime") or self.session_start_time
+        self._last_user_preview = str(metadata.get("preview") or "")
+        if self.use_openai:
+            self._openai_messages = messages
+            self._anthropic_messages = []
+        else:
+            self._anthropic_messages = messages
+            self._openai_messages = []
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.last_input_token_count = 0
+        self.current_turns = 0
+        print_info(
+            f"Session {self.session_id} restored "
+            f"({self._get_message_count()} messages, model: {self.model})."
+        )
 
     def _get_message_count(self) -> int:
         return len(self._openai_messages) if self.use_openai else len(self._anthropic_messages)
 
     def _auto_save(self) -> None:
         try:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             save_session(self.session_id, {
                 "metadata": {
                     "id": self.session_id,
                     "model": self.model,
+                    "backend": self.backend,
                     "cwd": str(Path.cwd()),
                     "startTime": self.session_start_time,
+                    "updatedAt": now,
                     "messageCount": self._get_message_count(),
+                    "preview": self._last_user_preview,
+                    "schemaVersion": 2,
                 },
                 "anthropicMessages": self._anthropic_messages if not self.use_openai else None,
                 "openaiMessages": self._openai_messages if self.use_openai else None,

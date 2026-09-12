@@ -93,7 +93,23 @@ mini-claude --model your-model "hello"
 --max-turns N       限制 Agent 轮次
 ```
 
-交互式 REPL 支持 `/clear`、`/plan`、`/cost`、`/compact`、`/memory` 和 `/skills`。
+交互式 REPL 还支持会话和模型管理：
+
+```text
+/model                 显示当前后端和模型
+/model <模型名>        在当前后端内切换模型，并保留本次对话历史
+/sessions              列出当前项目、当前后端的历史会话
+/resume                列出会话并交互选择恢复
+/resume <序号或ID>     直接恢复指定会话
+/clear                  清空当前对话
+/plan                   切换计划模式
+/cost                   显示本次进程内的 token 与费用统计
+/compact                压缩当前上下文
+/memory                 列出长期记忆
+/skills                 列出技能
+```
+
+恢复会话时会自动恢复该会话保存的模型，并继续使用原会话 ID。当前版本只允许在同一 API 后端内恢复；例如，用 OpenAI 后端启动时不会列出或恢复 Anthropic 会话。会话列表还会按当前工作目录隔离。
 
 ## 可选项目配置
 

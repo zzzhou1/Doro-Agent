@@ -6,9 +6,16 @@ import sys
 import tomllib
 from argparse import Namespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from mini_claude.__main__ import _load_project_env, _resolve_api_config
+import pytest
+
+from mini_claude.__main__ import (
+    _load_project_env,
+    _resolve_api_config,
+    _resolve_session_selector,
+    _restore_agent_session,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,3 +107,28 @@ def test_project_dotenv_loads_without_overriding_shell(tmp_path: Path) -> None:
         assert os.environ["OPENAI_API_KEY"] == "from-shell"
         assert os.environ["OPENAI_BASE_URL"] == "https://dotenv.example/v1"
         assert os.environ["MINI_CLAUDE_MODEL"] == "dotenv-model"
+
+
+def test_session_selector_accepts_list_number_or_id() -> None:
+    sessions = [{"id": "abcd1234"}, {"id": "12345678"}]
+
+    assert _resolve_session_selector("1", sessions) == "abcd1234"
+    assert _resolve_session_selector("12345678", sessions) == "12345678"
+    with pytest.raises(ValueError, match="out of range"):
+        _resolve_session_selector("3", sessions)
+    with pytest.raises(ValueError, match="not found"):
+        _resolve_session_selector("missing", sessions)
+
+
+def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:
+    agent = Mock()
+    monkeypatch.chdir(tmp_path)
+    with patch("mini_claude.__main__.load_session", return_value={
+        "metadata": {
+            "id": "saved123",
+            "cwd": str(tmp_path / "another-project"),
+        }
+    }):
+        with pytest.raises(ValueError, match="different project"):
+            _restore_agent_session(agent, "saved123")
+    agent.restore_session.assert_not_called()
