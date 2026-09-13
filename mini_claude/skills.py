@@ -4,7 +4,7 @@ Mirrors Claude Code's skill architecture: frontmatter metadata + prompt template
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .frontmatter import parse_frontmatter

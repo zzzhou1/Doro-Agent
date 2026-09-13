@@ -8,15 +8,17 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-
-from .frontmatter import parse_frontmatter, format_frontmatter
 
 # A callable that sends a prompt and returns model text response.
 # Signature: async (system: str, user_message: str) -> str
-from typing import Callable
+from typing import Any
+
+from .frontmatter import format_frontmatter, parse_frontmatter
+from .output import emit_warning
+
 SideQueryFn = Callable[[str, str], Any]  # actually Awaitable[str]
 
 # ─── Types ──────────────────────────────────────────────────
@@ -27,7 +29,7 @@ MAX_INDEX_BYTES = 25000
 
 
 class MemoryEntry:
-    __slots__ = ("name", "description", "type", "filename", "content")
+    __slots__ = ("content", "description", "filename", "name", "type")
 
     def __init__(self, name: str, description: str, type: str, filename: str, content: str):
         self.name = name
@@ -137,7 +139,7 @@ def load_memory_index() -> str:
 # ─── Memory Header (lightweight scan) ──────────────────────
 
 class MemoryHeader:
-    __slots__ = ("filename", "file_path", "mtime_ms", "description", "type")
+    __slots__ = ("description", "file_path", "filename", "mtime_ms", "type")
 
     def __init__(self, filename: str, file_path: str, mtime_ms: float,
                  description: str | None, type: str | None):
@@ -185,7 +187,7 @@ def format_memory_manifest(headers: list[MemoryHeader]) -> str:
     lines = []
     for h in headers:
         tag = f"[{h.type}] " if h.type else ""
-        ts = datetime.fromtimestamp(h.mtime_ms / 1000, tz=timezone.utc).isoformat()
+        ts = datetime.fromtimestamp(h.mtime_ms / 1000, tz=UTC).isoformat()
         if h.description:
             lines.append(f"- {tag}{h.filename} ({ts}): {h.description}")
         else:
@@ -223,7 +225,7 @@ Return a JSON object with a "selected_memories" array of filenames for the memor
 
 
 class RelevantMemory:
-    __slots__ = ("path", "content", "mtime_ms", "header")
+    __slots__ = ("content", "header", "mtime_ms", "path")
 
     def __init__(self, path: str, content: str, mtime_ms: float, header: str):
         self.path = path
@@ -282,7 +284,7 @@ async def select_relevant_memories(
     except Exception as e:
         if "cancel" in str(e).lower():
             return []
-        print(f"[memory] semantic recall failed: {e}")
+        emit_warning(f"[memory] semantic recall failed: {e}")
         return []
 
 

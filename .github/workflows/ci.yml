@@ -1,0 +1,45 @@
+name: CI
+
+# Runs the test suite, ruff and mypy on every push and pull request.
+#
+# The matrix is Windows-only on purpose: this project is developed and shipped
+# on Windows, and the suite has never been run on Linux. To widen it, add
+# "ubuntu-latest" to `os` and expect to triage platform assumptions in
+# tests/test_cli.py (stdio encoding) and mcp_client's process-tree teardown.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra lint
+
+      # --no-sync: uv sync above already built the environment; a bare
+      # `uv run` would re-resolve on every step.
+      - name: Lint (ruff)
+        run: uv run --no-sync ruff check
+
+      - name: Type check (mypy)
+        run: uv run --no-sync mypy
+
+      - name: Test
+        run: uv run --no-sync pytest -q

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re as _re
 import subprocess
 import sys
 from pathlib import Path
@@ -99,8 +100,6 @@ Shell: {{shell}}
 {{deferred_tools}}"""
 
 
-import re as _re
-
 # ─── @include resolution ─────────────────────────────────────
 # Resolves @./path, @~/path, @/path references in CLAUDE.md files.
 
@@ -192,11 +191,19 @@ def load_claude_md() -> str:
 
 def get_git_context() -> str:
     """Get git branch, recent commits, and status."""
+
+    def run_git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            encoding="utf-8",
+            timeout=3,
+            capture_output=True,
+        ).stdout.strip()
+
     try:
-        opts = {"encoding": "utf-8", "timeout": 3, "capture_output": True}
-        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], **opts).stdout.strip()
-        log = subprocess.run(["git", "log", "--oneline", "-5"], **opts).stdout.strip()
-        status = subprocess.run(["git", "status", "--short"], **opts).stdout.strip()
+        branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
+        log = run_git("log", "--oneline", "-5")
+        status = run_git("status", "--short")
         result = f"\nGit branch: {branch}"
         if log:
             result += f"\nRecent commits:\n{log}"

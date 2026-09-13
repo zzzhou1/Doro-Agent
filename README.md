@@ -103,7 +103,7 @@ ANTHROPIC_MODEL=claude-opus-5
 ANTHROPIC_EFFORT=medium
 ```
 
-**模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型，优先用按后端的 `ANTHROPIC_MODEL` / `OPENAI_MODEL`；**`MINI_CLAUDE_MODEL` 对全部后端生效**，会把一个服务商的模型名带到另一个上，只在确认只跑单一后端时才用。
+**模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型用 `ANTHROPIC_MODEL` / `OPENAI_MODEL`，它们只作用于自己的后端。（早先的 `MINI_CLAUDE_MODEL` 对全部后端生效，会把一个服务商的模型名带到另一个上，**已移除**。）
 
 **思考强度也可以不写。** 内置默认是 `medium`，可选 `auto`、`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。各模型支持范围不同：Anthropic 不支持 `minimal`；已知不支持的组合会在本地报错，其余由实际 API 端点校验，不会静默降级。
 
@@ -147,7 +147,7 @@ mini-claude --model your-model "hello"
 
 也可以用 `--api-base` 临时覆盖 OpenAI-compatible 地址。
 
-模型解析优先级：`--model` > `MINI_CLAUDE_MODEL`（所有后端）> `ANTHROPIC_MODEL` / `OPENAI_MODEL`（仅该后端）> 该后端的内置默认。启动时首行会打印实际生效的后端与模型，例如：
+模型解析优先级：`--model` > `ANTHROPIC_MODEL` / `OPENAI_MODEL`（仅该后端）> 该后端的内置默认。启动时首行会打印实际生效的后端与模型，例如：
 
 思考强度解析优先级：REPL `/effort` > 显式 `--effort` / `--thinking` > 恢复会话中保存的值 > `OPENAI_REASONING_EFFORT` / `ANTHROPIC_EFFORT` > `MINI_CLAUDE_EFFORT` > 内置 `medium`。`/effort default` 可重置到环境变量或内置默认。
 
@@ -185,27 +185,61 @@ mini-claude --model your-model "hello"
 /resume <序号或ID>     直接恢复指定会话
 /clear                  清空当前对话
 /plan                   切换计划模式
-/cost                   显示本次进程内的 token 与费用统计
+/mcp                    列出每个 MCP server 的连接状态与工具数
+/mcp tools              按 server 分组列出已发现的 MCP 工具
+/mcp reconnect          立即重连失败/待连接的 MCP server
+/cost                   显示本轮与会话累计的 token 与费用明细
 /compact                压缩当前上下文
 /memory                 列出长期记忆
 /skills                 列出技能
+/config                 显示最终生效的配置及每一项的来源
+/doctor                 逐项体检运行环境与 API 配置
 ```
 
 `/model` 会调用当前后端的模型列表接口。若 OpenAI-compatible 服务没有实现该接口，仍可使用 `/model <模型名>` 直接切换。切换只改变模型，不会改变 OpenAI/Anthropic 后端。
 
-每轮结束打印的 `Tokens:` 是**总输入**，包含命中 prompt cache 的部分并标注 `(N cached)`。两个后端对"总输入"的定义恰好相反，必须分开处理：
+每轮结束打印的 `Tokens:` 是**总输入**，括号里是缓存明细，两个后端对"总输入"的定义恰好相反，必须分开处理：
 
 - **Anthropic**：`input_tokens` 只是**未命中缓存**的那部分，真正的输入要三项相加（`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`）。命中缓存时 `input_tokens` 会是 0。
 - **OpenAI-compatible**：`prompt_tokens` **本身就是全部输入**，缓存过的前缀是它的子集，单独放在 `prompt_tokens_details.cached_tokens`。这里**不能相加**，否则会重复计数、把上下文占用算高。
 
-这个数同时决定自动压缩何时触发，算错会导致长对话撞上下文上限。费用估算按缓存读的折扣折算：Anthropic 0.1x、OpenAI 0.5x（缓存写 1.25x，仅 Anthropic 计费）。
+`/cost` 里 `cached` 和 `written` **分开显示、绝不合并**：缓存读是折扣（输入价的 0.1x/0.5x），缓存写是**加价**（1.25x），把两者加成一个 `cached` 会把加价当成省下的钱，还会凭空造出一个命中率——某些网关（本机用的 rightapi.ai 就是）把每轮新出现的 token 全记成 cache write 且 `input_tokens` 报 0，合并后就会**每轮都显示"100% cached"**，连刚输入的新内容也算进去。剩下的部分即未缓存输入，可由总数相减得出；`/cost` 在检测到"0 fresh"时会明确说明这只是后端自己的口径、不是可验证的命中率。
 
-是否命中缓存由服务端决定，客户端无法保证：同一个请求可能这次命中、下次不命中（经多上游轮询的网关尤其如此），这里只如实显示服务端报回的命中量。没有 `(N cached)` 标记不代表代码有问题，而是这一次没命中。
+这个数同时决定自动压缩何时触发，算错会导致长对话撞上下文上限。费用估算按缓存读的折扣折算：Anthropic 0.1x、OpenAI 0.5x（缓存写 1.25x，仅 Anthropic 计费），并且**按模型取价**。
+
+上下文窗口**所有模型共用一个默认值 272,000**，不按模型名查表。原因：能出现在这个位置的名字（`gpt-5.6-sol`、`claude-opus-5`）多半是网关别名，真实上限无从确证，而按名字精确匹配只会让带日期后缀或改过名的别名静默落到兜底值 —— 与其给一个看似合理的错数，不如给一个明确的默认。窗口同时决定状态栏的分母和自动压缩的触发点（`(窗口 - 20000) × 85%`），填错会实实在在改变压缩时机。要改就在 `.env` 里设 `MINI_CLAUDE_CONTEXT_WINDOW`，纯数字，非法值忽略并回落默认。
+
+每轮结束时，**分隔线下面只打印一行**，内容是本轮消耗：
+
+```
+──────────────────────────────────────────────────
+  Tokens: 19942 in (99% cached) / 63 out · 2 calls (~$0.0074)
+```
+
+- 只报**本轮**（含本轮内压缩调用和子 agent 的开销），会话累计需要时用 `/cost` 看。
+- 括号里是**缓存读占本轮的百分比**（`cache_read / 本轮输入`）。缓存写不计入这个比例：它本身是加价项，而网关会把每轮新出现的 token 全记成写，算进去就又变成"100% cached"。
+- **"本轮"是同一条输入内所有 API 调用的累加**，不是最后一次调用：一条消息一旦触发工具，至少计费两次（一次决定调哪个工具，一次带工具结果作答），因此本轮的输入 token 经常远大于上下文窗口。末尾的 `· N calls` 就是这个累加次数；只有 1 次时写 `1 call`。
+- OpenAI-compatible 的推理模型还会多一个 `N reasoning` 标记（是输出 token 的子集，只用于展示）。
+- 未知模型的费用由默认价目估算，这里**不写 `estimated`**（行宽所限）；是否需要打折扣、价格从哪来，看 `/cost` 的 `pricing` 行与 `/doctor`。
+
+定价只内置了公开的一手价目（Anthropic、OpenAI 的若干型号）。网关别名（如 `gpt-5.6-sol`、`claude-opus-5`）**没有公开单价，不会被编造**——查不到时回落到一个带说明的默认价目，并在费用后标注 `estimated`，`/doctor` 也会给一条 warning。要拿到真实数字，在 `.env` 里覆盖：
+
+```bash
+# 按模型（JSON，USD / 百万 token）
+MINI_CLAUDE_PRICES={"gpt-5.6-sol": {"input": 2, "output": 8, "cache_write": 2.5, "cache_read": 0.4}}
+# 或对所有模型统一设定
+MINI_CLAUDE_PRICE_INPUT=2
+MINI_CLAUDE_PRICE_OUTPUT=8
+MINI_CLAUDE_PRICE_CACHE_WRITE=2.5
+MINI_CLAUDE_PRICE_CACHE_READ=0.4
+```
+
+是否命中缓存由服务端决定，客户端无法保证：同一个请求可能这次命中、下次不命中（经多上游轮询的网关尤其如此），这里只如实显示服务端报回的命中量。没有 `(N cached)` 标记不代表代码有问题，而是这一次没命中。同理，命中量高也不代表真的省钱——它只是后端自报的数字。
 
 标准输出固定按 UTF-8 编码，重定向到文件也是如此，不随系统区域设置（Windows 上默认是 ANSI 代码页，如 cp936）变化。
 
 交互输入支持 `/` 命令自动补全：在行首输入 `/` 会立即显示内置命令和可调用 skill，继续输入可缩小范围，也可按 Tab 补全。主对话提示符支持用上下方向键查看最近输入；历史保存在 `~/.mini-claude/input_history`，重启程序后仍然可用。`/model`、`/session` 和 `/resume` 会直接在输出位置绘制可选列表，用上下方向键移动高亮项、Enter 确认、Esc 取消，不会另外打开侧边候选面板。
-交互模式会在终端底部持续显示当前目录、上下文占用/窗口、自动压缩状态、累计估算费用、会话 ID、API 后端、模型和运行模式。等待输入时由 Prompt Toolkit 绘制单行底栏；模型流式输出和工具执行时切换为同样的单行 Live 底栏，并主动避开终端最后一列，防止 Windows Terminal 自动换行后留下重绘残影。窄终端会优先保留上下文和模型并自动隐藏次要字段；重定向输出和一次性命令不会绘制状态栏。
+交互模式会在终端底部持续显示当前目录、上下文占用/窗口、自动压缩状态、累计估算费用、会话 ID、API 后端、模型和运行模式；配置了 MCP server 时还会显示 `mcp: 已连接/总数`。等待输入时由 Prompt Toolkit 绘制单行底栏；模型流式输出和工具执行时切换为同样的单行 Live 底栏，并主动避开终端最后一列，防止 Windows Terminal 自动换行后留下重绘残影。窄终端会优先保留上下文和模型并自动隐藏次要字段；重定向输出和一次性命令不会绘制状态栏。
 
 恢复会话时会自动恢复该会话保存的模型，并继续使用原会话 ID。当前版本只允许在同一 API 后端内恢复；例如，用 OpenAI 后端启动时不会列出或恢复 Anthropic 会话。会话列表还会按当前工作目录隔离。
 

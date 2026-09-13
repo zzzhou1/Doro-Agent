@@ -11,7 +11,6 @@ import pytest
 import mini_claude.mcp_client as mcp_client
 from mini_claude.mcp_client import McpConnection, McpError, McpManager, McpTimeoutError
 
-
 SERVER = Path(__file__).parent / "fixtures" / "mcp_server.py"
 
 # Reads whatever arrives, then exits without ever answering.
@@ -137,6 +136,19 @@ def test_concurrency_safe_is_opt_in_per_server() -> None:
     assert manager.is_concurrency_safe("mcp__ghost__lookup") is False
     assert manager.is_concurrency_safe("read_file") is False
     assert manager.is_concurrency_safe("mcp__malformed") is False
+
+
+def test_read_only_flag_is_shared_by_the_plan_mode_gate() -> None:
+    """Plan mode and concurrency read the same ``readOnly`` statement."""
+    manager = McpManager()
+    manager._connections["ro"] = McpConnection("ro", sys.executable, [], read_only=True)
+    manager._connections["rw"] = McpConnection("rw", sys.executable, [], read_only=False)
+
+    assert manager.is_read_only_tool("mcp__ro__send") is True
+    assert manager.is_read_only_tool("mcp__rw__send") is False
+    assert manager.is_read_only_tool("mcp__ghost__send") is False
+    assert manager.is_read_only_tool("read_file") is False
+    assert manager.is_read_only_tool("mcp__malformed") is False
 
 
 def test_get_tool_definitions_skips_names_the_api_would_reject() -> None:
@@ -303,6 +315,157 @@ async def test_failed_server_connection_is_retried(monkeypatch) -> None:
 
     assert await manager.load_and_connect() is False
     assert manager._connected is False
-    assert await manager.load_and_connect() is False
+    # Backoff blocks an immediate automatic retry; a forced reconnect (manual
+    # /mcp reconnect, or the background loop after the deadline) goes through.
+    assert await manager.load_and_connect(force=True) is False
     assert manager._connected is False
     assert attempts == 2
+
+
+class _FakeConnection:
+    """Configurable stand-in for _McpConnection — no subprocess needed."""
+
+    def __init__(self, delay: float = 0.0, fail: bool = False, tool_count: int = 0):
+        self.delay = delay
+        self.fail = fail
+        self.tool_count = tool_count
+        self.connect_timeout = 5
+        self.read_only = False
+        self.transport = "stdio"
+        self.connect_calls = 0
+
+    async def connect(self):
+        self.connect_calls += 1
+        await asyncio.sleep(self.delay)
+        if self.fail:
+            raise McpError("temporary failure")
+
+    async def initialize(self):
+        return {}
+
+    async def list_tools(self):
+        return [{"name": f"t{i}", "serverName": "fake"} for i in range(self.tool_count)]
+
+    async def aclose(self):
+        pass
+
+
+def _patch_servers(monkeypatch, manager: McpManager, fakes: dict[str, _FakeConnection]):
+    monkeypatch.setattr(
+        manager, "_load_configs", lambda: {name: {"command": "x"} for name in fakes}
+    )
+    monkeypatch.setattr(
+        manager, "_build_connection", lambda name, _cfg: fakes[name]
+    )
+
+
+@pytest.mark.asyncio
+async def test_servers_connect_in_parallel(monkeypatch) -> None:
+    """Two 0.3s handshakes must overlap, not queue up one after the other."""
+    manager = McpManager()
+    _patch_servers(monkeypatch, manager, {
+        "a": _FakeConnection(delay=0.3),
+        "b": _FakeConnection(delay=0.3),
+    })
+
+    started = time.monotonic()
+    assert await manager.load_and_connect() is True
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.55, f"connections look serial: {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_failed_server_backs_off_until_the_deadline(monkeypatch) -> None:
+    manager = McpManager()
+    fake = _FakeConnection(fail=True)
+    _patch_servers(monkeypatch, manager, {"demo": fake})
+
+    assert await manager.load_and_connect() is False
+    assert fake.connect_calls == 1
+
+    # Inside the backoff window a normal pass skips the server entirely.
+    assert await manager.load_and_connect() is False
+    assert fake.connect_calls == 1
+
+    # Once the deadline passes, the next pass retries it.
+    manager._states["demo"].next_retry_at = time.monotonic() - 1
+    assert await manager.load_and_connect() is False
+    assert fake.connect_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_config_is_skipped_permanently(monkeypatch) -> None:
+    """A bad config is terminal (not retried), and doesn't block 'connected'."""
+    manager = McpManager()
+    monkeypatch.setattr(manager, "_load_configs", lambda: {"bad": {"command": "x"}})
+
+    def bad_builder(_name, _cfg):
+        raise ValueError("name may only contain letters")
+
+    monkeypatch.setattr(manager, "_build_connection", bad_builder)
+
+    assert await manager.load_and_connect() is True
+    state = manager._states["bad"]
+    assert state.status == "skipped"
+    assert state.next_retry_at == float("inf")
+    # The background retry loop must not fire for a skipped server.
+    manager._schedule_retry_loop()
+    assert manager._retry_task is None
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_uses_the_background_task_and_stays_cheap(monkeypatch) -> None:
+    manager = McpManager()
+    fake = _FakeConnection(tool_count=2)
+    _patch_servers(monkeypatch, manager, {"demo": fake})
+
+    manager.start_background()
+    assert manager._connect_task is not None
+
+    assert await manager.wait_ready() is True
+    assert manager._states["demo"].status == "connected"
+    assert manager._states["demo"].tool_count == 2
+
+    # Later calls (every chat turn) must not reconnect or wait on anything.
+    started = time.monotonic()
+    assert await manager.wait_ready() is True
+    assert time.monotonic() - started < 0.1
+    assert fake.connect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_background_retry_loop_reconnects_after_backoff(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_client, "_RETRY_DELAYS", (0.05,))
+    manager = McpManager()
+    fake = _FakeConnection(fail=True)
+    _patch_servers(monkeypatch, manager, {"demo": fake})
+
+    assert await manager.load_and_connect() is False
+    fake.fail = False  # server "recovers" before the retry fires
+
+    manager._schedule_retry_loop()
+    assert manager._retry_task is not None
+    await asyncio.wait_for(manager._retry_task, timeout=5)
+
+    assert manager._connected is True
+    assert manager._states["demo"].status == "connected"
+    assert fake.connect_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_server_statuses_cover_mixed_outcomes(monkeypatch) -> None:
+    manager = McpManager()
+    _patch_servers(monkeypatch, manager, {
+        "up": _FakeConnection(tool_count=3),
+        "down": _FakeConnection(fail=True),
+    })
+    assert await manager.load_and_connect() is False
+
+    statuses = {s["name"]: s for s in manager.server_statuses()}
+    assert statuses["up"]["status"] == "connected"
+    assert statuses["up"]["tool_count"] == 3
+    assert statuses["up"]["transport"] == "stdio"
+    assert statuses["down"]["status"] == "failed"
+    assert statuses["down"]["error"] == "temporary failure"
+    assert statuses["down"]["retry_in"] > 0
+    assert manager.status_counts() == (1, 2)

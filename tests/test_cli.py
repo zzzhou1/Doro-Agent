@@ -11,17 +11,16 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from mini_claude.__main__ import (
-    parse_args,
-    _load_project_env,
     _force_utf8_stdio,
-    _resolve_model_selector,
+    _load_project_env,
     _resolve_api_config,
+    _resolve_model_selector,
     _resolve_reasoning_effort,
     _resolve_session_selector,
     _restore_agent_session,
+    parse_args,
     run_repl,
 )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,7 +57,7 @@ def test_redirected_output_is_utf8_without_utf8_mode(tmp_path) -> None:
             stdout=fh, stderr=subprocess.DEVNULL, env=env, cwd=str(ROOT), check=True,
         )
 
-    assert out.read_bytes() == "你好".encode("utf-8")
+    assert out.read_bytes() == "你好".encode()
 
 
 def test_console_script_metadata_matches_documentation() -> None:
@@ -378,6 +377,55 @@ async def test_repl_session_aliases_use_the_same_selector(command: str) -> None:
 
     choice.assert_awaited_once()
     restore.assert_called_once_with(agent, "saved123")
+
+
+@pytest.mark.asyncio
+async def test_repl_patches_stdout_while_prompt_is_active() -> None:
+    """MCP warm-up/retry output can land mid-prompt; stdout must be routed
+    through prompt_toolkit so it prints above the prompt instead of shoving
+    the cursor down and squashing the status toolbar."""
+    import contextlib
+
+    agent = Mock()
+    agent._aborted = False
+    agent._output_buffer = None
+    entered: list[dict] = []
+
+    @contextlib.contextmanager
+    def fake_patch_stdout(**kwargs):
+        entered.append(kwargs)
+        yield
+
+    prompt_session = Mock()
+    prompt_session.prompt_async = AsyncMock(side_effect=["exit"])
+
+    with (
+        patch("mini_claude.__main__.signal.signal"),
+        patch("mini_claude.__main__.print_welcome"),
+        patch("mini_claude.__main__.patch_stdout", fake_patch_stdout),
+    ):
+        await run_repl(agent, prompt_session=prompt_session)
+
+    # raw=True: our output is pre-rendered by Rich with ANSI escapes; raw=False
+    # would print them literally ("?[36m").
+    assert entered == [{"raw": True}]
+
+
+def test_prompt_output_guard_falls_back_without_a_console() -> None:
+    """piped output / CI: prompt_toolkit can't build its output — plain
+    stdout must survive instead of crashing the REPL."""
+    import contextlib
+
+    from mini_claude.__main__ import _prompt_output_guard
+
+    @contextlib.contextmanager
+    def broken_patch_stdout():
+        raise RuntimeError("no console")
+        yield
+
+    with patch("mini_claude.__main__.patch_stdout", broken_patch_stdout):
+        with _prompt_output_guard():
+            print("still works")
 
 
 def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:

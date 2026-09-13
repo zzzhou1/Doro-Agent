@@ -15,33 +15,35 @@ import os
 from argparse import Namespace
 from unittest.mock import patch
 
+from mini_claude.__main__ import _resolve_model
 from mini_claude.agent import (
     DEFAULT_MODELS,
     Agent,
     default_model_for,
     resolve_default_model,
 )
-from mini_claude.__main__ import _resolve_model
 
 
 def _args(model: str | None = None) -> Namespace:
     return Namespace(model=model)
 
 
-def _model_env():
+def _model_env(**overrides: str):
     """Environment with the model env vars blanked, everything else intact.
 
     Clearing the whole environment breaks both ``Path.home()`` (Agent() resolves
     its memory directory during construction) and the SDK clients, which refuse
     to be built without *some* key — so placeholders are supplied instead.
+    ``overrides`` lets a test set one variable without restating the rest.
     """
     env = {
-        "MINI_CLAUDE_MODEL": "",
         "ANTHROPIC_MODEL": "",
         "OPENAI_MODEL": "",
+        "MINI_CLAUDE_CONTEXT_WINDOW": "",
         "ANTHROPIC_API_KEY": "test-key",
         "OPENAI_API_KEY": "test-key",
     }
+    env.update(overrides)
     return patch.dict(os.environ, env, clear=False)
 
 
@@ -66,24 +68,32 @@ def test_explicit_override_beats_the_backend_env_var() -> None:
         assert resolve_default_model("anthropic", "explicit-model") == "explicit-model"
 
 
-def test_global_env_var_does_not_leak_into_the_other_backend() -> None:
-    """MINI_CLAUDE_MODEL is a CLI-level override, not a per-backend default."""
-    with patch.dict(os.environ, {"MINI_CLAUDE_MODEL": "gpt-5.6-sol"}, clear=True):
+def test_the_removed_global_env_var_no_longer_does_anything() -> None:
+    """Regression: MINI_CLAUDE_MODEL used to carry a name across backends."""
+    stale = {"MINI_CLAUDE_MODEL": "gpt-5.6-sol"}
+    with patch.dict(os.environ, stale, clear=True):
         assert resolve_default_model("anthropic") == "claude-opus-5"
+        assert _resolve_model(_args(), "anthropic") == (
+            "claude-opus-5",
+            "default for anthropic",
+        )
+    with patch.dict(os.environ, {**stale, "OPENAI_MODEL": "oai-env"}, clear=True):
+        assert _resolve_model(_args(), "openai") == ("oai-env", "OPENAI_MODEL")
 
 
 def test_blank_env_values_are_ignored() -> None:
-    env = {"OPENAI_MODEL": "   ", "MINI_CLAUDE_MODEL": ""}
+    env = {"OPENAI_MODEL": "   "}
     with patch.dict(os.environ, env, clear=True):
         assert _resolve_model(_args(), "openai") == ("gpt-5.6-sol", "default for openai")
 
 
 def test_cli_precedence() -> None:
+    with patch.dict(os.environ, {"MINI_CLAUDE_MODEL": "global-model"}, clear=True):
+        assert _resolve_model(_args("cli-model"), "openai") == ("cli-model", "--model")
+    # The removed global variable must not outrank the per-backend one.
     both = {"MINI_CLAUDE_MODEL": "global-model", "OPENAI_MODEL": "backend-model"}
     with patch.dict(os.environ, both, clear=True):
-        assert _resolve_model(_args("cli-model"), "openai") == ("cli-model", "--model")
-    with patch.dict(os.environ, both, clear=True):
-        assert _resolve_model(_args(), "openai") == ("global-model", "MINI_CLAUDE_MODEL")
+        assert _resolve_model(_args(), "openai") == ("backend-model", "OPENAI_MODEL")
     with patch.dict(os.environ, {"OPENAI_MODEL": "backend-model"}, clear=True):
         assert _resolve_model(_args(), "openai") == ("backend-model", "OPENAI_MODEL")
     with _model_env():
@@ -112,15 +122,28 @@ def test_agent_keeps_an_explicit_model() -> None:
         assert Agent(backend="openai", model="my-model").model == "my-model"
 
 
-def test_context_window_tracks_the_resolved_model() -> None:
-    """effective_window keys off self.model, so it must not read a stale local."""
+def test_context_window_is_shared_by_every_model() -> None:
+    """One window for all models — no per-alias table to drift out of date."""
     with _model_env():
         openai_agent = Agent(backend="openai")
         anthropic_agent = Agent(backend="anthropic")
-        assert openai_agent.context_window == 128000
-        assert openai_agent.effective_window == 128000 - 20000
-        assert anthropic_agent.context_window == 200000
-        assert anthropic_agent.effective_window == 200000 - 20000
+
+    assert openai_agent.context_window == 272000
+    assert openai_agent.effective_window == 272000 - 20000
+    assert anthropic_agent.context_window == 272000
+    assert anthropic_agent.effective_window == 272000 - 20000
+
+
+def test_context_window_can_be_overridden_from_the_environment() -> None:
+    with _model_env(MINI_CLAUDE_CONTEXT_WINDOW="100000"):
+        assert Agent(backend="anthropic").context_window == 100000
+
+
+def test_a_malformed_context_window_override_falls_back_to_the_default() -> None:
+    """A typo in .env must not stop the CLI from starting."""
+    for bad in ("abc", "0", "-5"):
+        with _model_env(MINI_CLAUDE_CONTEXT_WINDOW=bad):
+            assert Agent(backend="anthropic").context_window == 272000
 
 
 def test_status_snapshot_contains_display_state_but_no_credentials() -> None:
@@ -130,7 +153,7 @@ def test_status_snapshot_contains_display_state_but_no_credentials() -> None:
 
     assert snapshot["backend"] == "openai"
     assert snapshot["model"] == "gpt-5.6-sol"
-    assert snapshot["context_window"] == 128000
+    assert snapshot["context_window"] == 272000
     assert snapshot["session_id"] == agent.session_id
     assert snapshot["reasoning_effort"] == "medium"
     assert "api_key" not in snapshot

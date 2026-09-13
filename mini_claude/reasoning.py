@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 REASONING_EFFORTS: tuple[str, ...] = (
     "auto",
     "off",

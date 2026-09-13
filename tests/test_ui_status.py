@@ -140,6 +140,93 @@ def test_cost_is_printed_after_the_pending_assistant_line(monkeypatch) -> None:
     ui.stop_live_status()
 
 
+def test_end_of_turn_footer_shows_only_this_round(monkeypatch) -> None:
+    """One line, this round only: no session row, no "this round:", no "estimated"."""
+    fake_console = SimpleNamespace(is_terminal=True, print=Mock())
+    ui.stop_live_status()
+    monkeypatch.setattr(ui, "console", fake_console)
+
+    ui.print_cost(
+        10000,
+        40,
+        cache_read_tokens=9000,
+        reasoning_tokens=12,
+        session_cost=0.05,
+        round_usage={
+            "input": 10000,
+            "output": 5,
+            "cache_read": 9000,
+            "cache_write": 0,
+            "reasoning": 3,
+            "cost": 0.005,
+            "calls": 2,
+        },
+        estimated=True,
+    )
+
+    rendered = fake_console.print.call_args.args[0]
+    assert "Tokens: 10000 in (90% cached) / 5 out · 3 reasoning · 2 calls (~$0.0050)" in rendered
+    # Session totals and the estimate qualifier live in /cost, not in the footer.
+    assert "this round" not in rendered
+    assert "estimated" not in rendered
+    assert "~$0.0500" not in rendered
+    assert fake_console.print.call_count == 1
+
+
+def test_divider_and_footer_do_not_add_blank_lines(monkeypatch) -> None:
+    """The rule hugs the answer and the footer hugs the rule."""
+    fake_console = SimpleNamespace(is_terminal=True, print=Mock())
+    ui.stop_live_status()
+    monkeypatch.setattr(ui, "console", fake_console)
+    # Simulate a streamed answer whose final line never got a newline.
+    monkeypatch.setattr(ui, "_line_open", True)
+
+    ui.print_divider()
+    ui.print_cost(
+        0,
+        0,
+        round_usage={"input": 100, "output": 5, "cache_read": 90, "cost": 0.001, "calls": 1},
+    )
+
+    divider = fake_console.print.call_args_list[0].args[0]
+    footer = fake_console.print.call_args_list[1].args[0]
+    # Terminates the open line, but never inserts a blank one.
+    assert divider.startswith("\n[dim]")
+    assert not divider.startswith("\n\n")
+    # And the footer sits directly under the rule.
+    assert footer.startswith("  Tokens:"), footer
+
+
+def test_cost_line_without_pricing_falls_back_to_the_discount_rate(monkeypatch) -> None:
+    """The legacy call shape (no session_cost) must keep working."""
+    fake_console = SimpleNamespace(is_terminal=True, print=Mock())
+    ui.stop_live_status()
+    monkeypatch.setattr(ui, "console", fake_console)
+
+    ui.print_cost(1_000_000, 0, cache_read_tokens=1_000_000, cache_read_discount=0.5)
+
+    assert "~$1.5000" in fake_console.print.call_args.args[0]
+
+
+def test_panel_renders_a_title_and_unescaped_body(monkeypatch) -> None:
+    """Report bodies carry model ids, paths and error text — brackets included."""
+    fake_console = SimpleNamespace(is_terminal=True, print=Mock())
+    ui.stop_live_status()
+    monkeypatch.setattr(ui, "console", fake_console)
+
+    ui.print_panel("MCP servers", ["[mcp] error: name must not contain '__'"])
+
+    rendered = "\n".join(
+        str(call.args[0]) for call in fake_console.print.call_args_list
+    )
+    assert "MCP servers" in rendered
+    assert "[mcp] error: name must not contain '__'" in rendered
+    assert all(
+        call.kwargs.get("markup", True) is False
+        for call in fake_console.print.call_args_list[1:]
+    )
+
+
 def test_welcome_lists_effort_command(monkeypatch) -> None:
     fake_console = SimpleNamespace(print=Mock())
     monkeypatch.setattr(ui, "console", fake_console)

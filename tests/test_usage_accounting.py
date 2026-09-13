@@ -18,10 +18,13 @@ from unittest.mock import patch
 import pytest
 
 from mini_claude.agent import Agent, _anthropic_usage_totals, _openai_usage_totals
+from mini_claude.pricing import cache_read_discount_for
 from mini_claude.ui import (
-    cache_read_discount_for,
     estimate_cost_usd,
+    format_cached_percentage,
+    format_round_footer,
     format_token_usage,
+    format_usage_line,
 )
 
 
@@ -90,9 +93,28 @@ def test_format_marks_cached_tokens_only_when_present() -> None:
     assert format_token_usage(8837, 2, cache_read_tokens=8814) == (
         "Tokens: 8837 in (8814 cached) / 2 out"
     )
+
+
+def test_format_never_merges_cache_read_with_cache_write() -> None:
+    """Read is a discount, write is a premium — summing them invents a hit rate.
+
+    A gateway that books all newly-seen content as a cache write and reports
+    ``input_tokens=0`` used to render as "(8814 cached)" on a prompt that was
+    only half read from cache, i.e. a literal 100% hit rate every turn.
+    """
     assert format_token_usage(8837, 2, cache_read_tokens=8000, cache_write_tokens=814) == (
-        "Tokens: 8837 in (8814 cached) / 2 out"
+        "Tokens: 8837 in (8000 cached, 814 written) / 2 out"
     )
+
+
+def test_format_survives_a_backend_that_never_reports_an_uncached_slice() -> None:
+    """rightapi.ai shape: input_tokens=0, everything booked as read + write."""
+    line = format_token_usage(10687 + 88, 1, cache_read_tokens=10687, cache_write_tokens=88)
+
+    assert line == "Tokens: 10775 in (10687 cached, 88 written) / 1 out"
+    # The give-away is that no component is left uncached; the label must not
+    # read as a single merged "cached" figure hiding that.
+    assert "10775 cached" not in line
 
 
 # ─── OpenAI branch ───────────────────────────────────────────
@@ -244,3 +266,79 @@ async def test_stream_keeps_the_nested_cache_details() -> None:
     total, output, cache_read = _openai_usage_totals(response["usage"])
     assert (total, output, cache_read) == (2372, 8, 1984)
     assert response["choices"][0]["message"]["content"] == "pong"
+
+
+# ─── "This round" spans every call in one turn ───────────────
+
+
+def test_usage_line_reports_the_call_count_only_when_given() -> None:
+    """Session rows stay clean; only the round row carries the call count."""
+    assert "call" not in format_usage_line(1000, 5)
+    assert format_usage_line(1000, 5, calls=1).endswith("· 1 call")
+    assert format_usage_line(1000, 5, calls=3).endswith("· 3 calls")
+
+
+def test_cached_percentage_counts_reads_only() -> None:
+    """Cache writes must not inflate the share, or the gateway shape reads 100%."""
+    assert format_cached_percentage(20480, 21124) == "97% cached"
+    # Nothing read from cache (or an empty prompt) — omit the marker entirely.
+    assert format_cached_percentage(0, 21124) == ""
+    assert format_cached_percentage(500, 0) == ""
+    # A gateway over-reporting reads cannot push the share past 100%.
+    assert format_cached_percentage(9999, 100) == "100% cached"
+
+
+def test_round_footer_is_one_line_and_has_no_estimated_marker() -> None:
+    """The exact footer text — no session row, no 'estimated', no 'this round'."""
+    line = format_round_footer(
+        21124, 113, cache_read_tokens=20480, cost=0.0103, calls=2
+    )
+    assert line == "Tokens: 21124 in (97% cached) / 113 out · 2 calls (~$0.0103)"
+    assert "estimated" not in line
+
+
+def test_round_footer_omits_the_singular_and_missing_pieces() -> None:
+    assert format_round_footer(500, 7, calls=1) == "Tokens: 500 in / 7 out · 1 call"
+    assert format_round_footer(500, 7) == "Tokens: 500 in / 7 out"
+    assert format_round_footer(500, 7, reasoning_tokens=4) == (
+        "Tokens: 500 in / 7 out · 4 reasoning"
+    )
+
+
+def test_round_slice_sums_every_api_call_in_one_turn() -> None:
+    """A tool-using turn bills twice — "this round" must show the sum.
+
+    Observed on a real turn: call #1 decides the tool (7176 read + 3387 write),
+    call #2 answers with the result (10150 read + 47 write). The round row is
+    therefore larger than the context window, which only reads correctly once
+    the call count is printed next to it.
+    """
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"), patch(
+        "mini_claude.agent.stop_spinner"
+    ):
+        agent = Agent(backend="anthropic", api_key="test-key", custom_system_prompt="p")
+    agent.is_sub_agent = True  # keep chat()/printing out of the picture
+    agent._round_base = agent._usage_totals()
+    agent._round_api_base = agent._api_calls
+
+    for fresh, read, write in ((0, 7176, 3387), (0, 10150, 47)):
+        agent.total_input_tokens += fresh + read + write
+        agent.total_cache_read_tokens += read
+        agent.total_cache_write_tokens += write
+        agent._api_calls += 1
+
+    round_tokens = agent._round_tokens()
+    assert round_tokens["input"] == 20760
+    assert round_tokens["cache_read"] == 17326
+    assert round_tokens["cache_write"] == 3434
+    assert agent._round_calls() == 2
+
+
+def test_round_slice_is_empty_before_any_call() -> None:
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"), patch(
+        "mini_claude.agent.stop_spinner"
+    ):
+        agent = Agent(backend="anthropic", api_key="test-key", custom_system_prompt="p")
+
+    assert agent._round_calls() == 0
+    assert all(value == 0 for value in agent._round_tokens().values())

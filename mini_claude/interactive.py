@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Protocol
 
 from prompt_toolkit import Application, PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -17,25 +17,11 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
+from .commands import completion_map
 from .status import format_status_toolbar
-
 
 INPUT_HISTORY_FILE = Path.home() / ".mini-claude" / "input_history"
 StatusProvider = Callable[[], Mapping[str, Any]]
-
-BUILTIN_COMMANDS = {
-    "/clear": "Clear conversation history",
-    "/compact": "Compact the current context",
-    "/cost": "Show token usage and estimated cost",
-    "/effort": "Select or change reasoning effort",
-    "/memory": "List project memories",
-    "/model": "List or switch models",
-    "/plan": "Toggle plan mode",
-    "/resume": "Select and resume a session",
-    "/session": "Select and resume a session",
-    "/sessions": "List saved sessions",
-    "/skills": "List available skills",
-}
 
 
 class SkillLike(Protocol):
@@ -55,7 +41,7 @@ class SlashCommandCompleter(Completer):
         if not text.startswith("/") or any(char.isspace() for char in text):
             return
 
-        candidates = dict(BUILTIN_COMMANDS)
+        candidates = completion_map()
         try:
             for skill in self._skill_provider():
                 if skill.user_invocable:
@@ -197,7 +183,10 @@ def create_repl_prompt_session(
 ) -> PromptSession:
     path = history_path or INPUT_HISTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    bottom_toolbar = (
+    # prompt_toolkit happily accepts a callable returning formatted text, but
+    # its stub only spells out ``AnyFormattedText``; annotating as Any keeps the
+    # call site honest without a blanket type: ignore.
+    bottom_toolbar: Any = (
         (lambda: build_status_toolbar(status_provider))
         if status_provider is not None
         else None

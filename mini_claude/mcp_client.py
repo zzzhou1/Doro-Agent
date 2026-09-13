@@ -40,16 +40,47 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 from urllib.parse import urljoin
 
+from .output import emit_info, emit_warning
 
 IS_WIN = sys.platform == "win32"
 INSTALL_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_CONNECT_TIMEOUT = 15.0
 DEFAULT_TOOL_TIMEOUT = 60.0
+
+
+def config_search_paths(cwd: Path | None = None) -> list[Path]:
+    """MCP config files in merge order (later files win on name collisions).
+
+    Public because ``/config`` and ``/doctor`` report where a server definition
+    has to live to take effect — that path list was previously buried in
+    ``McpManager._load_configs`` with no way to inspect it.
+
+    De-duplicated: for an editable install the installation root *is* the source
+    tree, so with the project as the working directory the same ``.mcp.json``
+    would otherwise appear (and be merged) twice.
+    """
+    base = cwd or Path.cwd()
+    candidates = [
+        INSTALL_ROOT / ".mcp.json",
+        Path.home() / ".claude" / "settings.json",
+        base / ".claude" / "settings.json",
+        base / ".mcp.json",
+    ]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_INFO = {"name": "mini-claude", "version": "1.0.0"}
@@ -274,7 +305,7 @@ class _McpConnection:
                 self._request("tools/call", {"name": name, "arguments": args or {}}),
                 timeout=budget,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise McpTimeoutError(f"tool '{name}' did not respond within {budget:g}s") from exc
         return _extract_text(result)
 
@@ -352,8 +383,11 @@ class McpConnection(_McpConnection):
             except Exception:
                 pass
         else:
+            # POSIX-only group kill: ``npx`` spawns the real process as a child,
+            # so signalling the group is what actually reaps it. mypy is pinned
+            # to platform="win32" (see pyproject.toml) and cannot see these.
             try:
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                os.killpg(os.getpgid(pid), signal.SIGKILL)  # type: ignore[attr-defined]
             except Exception:
                 pass
         try:
@@ -602,7 +636,7 @@ class HttpMcpConnection(_McpConnection):
             await asyncio.wait_for(
                 self._endpoint_ready.wait(), timeout=self.connect_timeout,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             await self._teardown_stream()
             raise McpError(
                 f"server '{self.server_name}' sent no 'endpoint' event within "
@@ -649,7 +683,7 @@ class HttpMcpConnection(_McpConnection):
                         self._resolve(msg)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 - surfaced via _stream_error
+        except BaseException as exc:
             self._stream_error = exc
         finally:
             if self._endpoint_ready is not None:
@@ -693,56 +727,260 @@ def _validate_server_name(name: str) -> None:
         raise ValueError("name must not contain '__' (it separates server and tool)")
 
 
+# Backoff between automatic reconnect attempts after a failure: 30s, 60s,
+# then a steady 120s. Retries run in a background task so a dead server never
+# blocks a chat turn.
+_RETRY_DELAYS = (30.0, 60.0, 120.0)
+
+
+@dataclass
+class McpServerStatus:
+    """Per-server connection state, also surfaced by `/mcp`-style commands."""
+
+    name: str
+    status: str = "pending"  # pending | connecting | connected | failed | skipped
+    transport: str | None = None
+    tool_count: int = 0
+    error: str | None = None
+    attempts: int = 0
+    next_retry_at: float = 0.0  # time.monotonic() deadline; inf = never
+
+
 class McpManager:
-    """Manages all MCP server connections. Call load_and_connect() once, then
-    use get_tool_definitions() and call_tool() to integrate with the agent."""
+    """Manages all MCP server connections.
+
+    Typical flow: start_background() at REPL startup so servers warm up while
+    the user types, then wait_ready() on the first chat turn. Failed servers
+    retry in the background with exponential backoff; direct load_and_connect()
+    calls always attempt immediately (used by tests and manual reconnects).
+    """
 
     def __init__(self):
         self._connections: dict[str, _McpConnection] = {}
         self._tools: list[dict] = []
         self._connected = False
+        self._configs: dict[str, dict] = {}
+        self._states: dict[str, McpServerStatus] = {}
+        self._connect_locks: dict[str, asyncio.Lock] = {}
+        self._connect_task: asyncio.Task | None = None
+        self._retry_task: asyncio.Task | None = None
 
-    async def load_and_connect(self) -> bool:
-        """Read config, connect to every configured server, discover tools."""
+    # ── connect orchestration ──
+
+    def start_background(self) -> None:
+        """Kick off the initial connect without blocking the caller."""
+        if self._connect_task is None:
+            try:
+                self._connect_task = asyncio.create_task(self.load_and_connect())
+            except RuntimeError:
+                self._connect_task = None  # no running loop; wait_ready() retries
+
+    async def wait_ready(self) -> bool:
+        """Await the initial connect (started here or in the background), then
+        let any failures retry in the background. Never blocks on backoff."""
+        if self._connected:
+            return True
+        if self._connect_task is None:
+            self.start_background()
+        task = self._connect_task
+        if task is not None:
+            try:
+                await task
+            except Exception as e:
+                emit_warning(f"[mcp] Init failed: {e}")
+                self._connect_task = None
+        self._schedule_retry_loop()
+        return self._connected
+
+    async def load_and_connect(self, force: bool = False) -> bool:
+        """Connect to every configured server in parallel and discover tools.
+
+        Failed servers are normally left to their backoff deadline; force=True
+        retries them immediately (manual reconnect, background retry loop).
+        """
         if self._connected:
             return True
 
         configs = self._load_configs()
+        self._configs = configs
         if not configs:
             self._connected = True
             return True
 
-        retry_needed = False
+        now = time.monotonic()
+        to_attempt = []
         for name, cfg in configs.items():
             if name in self._connections:
                 continue
+            state = self._states.get(name)
+            if (
+                not force
+                and state is not None
+                and state.status == "failed"
+                and state.next_retry_at > now
+            ):
+                continue  # still backing off
+            to_attempt.append((name, cfg))
+
+        if to_attempt:
+            await asyncio.gather(
+                *(self._connect_one(name, cfg) for name, cfg in to_attempt)
+            )
+
+        # "Done" means every configured server reached a terminal state:
+        # connected, or skipped for a permanently invalid config.
+        self._connected = all(
+            name in self._connections
+            or (
+                (state := self._states.get(name)) is not None
+                and state.status == "skipped"
+            )
+            for name in configs
+        )
+        return self._connected
+
+    async def _connect_one(self, name: str, cfg: dict) -> None:
+        lock = self._connect_locks.setdefault(name, asyncio.Lock())
+        async with lock:
+            if name in self._connections:
+                return
+            state = self._states.setdefault(name, McpServerStatus(name=name))
+            state.status = "connecting"
+            state.attempts += 1
             try:
                 conn = self._build_connection(name, cfg)
             except ValueError as e:
-                print(f"[mcp] Skipping '{name}': {e}", flush=True)
-                continue
+                # Invalid configuration — report and never auto-retry.
+                state.status = "skipped"
+                state.error = str(e)
+                state.next_retry_at = float("inf")
+                emit_warning(f"[mcp] Skipping '{name}': {e}")
+                return
             try:
                 await conn.connect()
                 await asyncio.wait_for(conn.initialize(), timeout=conn.connect_timeout)
                 server_tools = await asyncio.wait_for(conn.list_tools(), timeout=conn.connect_timeout)
-                self._connections[name] = conn
-                self._tools.extend(server_tools)
-                flags = " [read-only]" if conn.read_only else ""
-                print(
-                    f"[mcp] Connected to '{name}' via {conn.transport} — "
-                    f"{len(server_tools)} tools{flags}",
-                    flush=True,
-                )
             except Exception as e:
-                retry_needed = True
-                print(f"[mcp] Failed to connect to '{name}': {e}", flush=True)
                 await conn.aclose()
+                self._record_failure(state, e)
+                emit_warning(f"[mcp] Failed to connect to '{name}': {e}")
+                return
+            self._connections[name] = conn
+            self._tools.extend(server_tools)
+            state.status = "connected"
+            state.transport = conn.transport
+            state.tool_count = len(server_tools)
+            state.error = None
+            state.next_retry_at = 0.0
+            flags = " [read-only]" if conn.read_only else ""
+            emit_info(
+                f"[mcp] Connected to '{name}' via {conn.transport} — "
+                f"{len(server_tools)} tools{flags}"
+            )
 
-        # Leave transient failures retryable. Invalid configurations are
-        # reported and skipped rather than retried on every user turn; already
-        # connected servers are skipped above on a subsequent attempt.
-        self._connected = not retry_needed
-        return self._connected
+    @staticmethod
+    def _record_failure(state: McpServerStatus, error: BaseException) -> None:
+        state.status = "failed"
+        state.error = str(error)
+        delay = _RETRY_DELAYS[min(state.attempts - 1, len(_RETRY_DELAYS) - 1)]
+        state.next_retry_at = time.monotonic() + delay
+
+    # ── background retry ──
+
+    def _schedule_retry_loop(self) -> None:
+        if self._connected:
+            return
+        if self._retry_task is not None and not self._retry_task.done():
+            return
+        if not any(s.status == "failed" for s in self._states.values()):
+            return
+        try:
+            self._retry_task = asyncio.create_task(self._retry_loop())
+        except RuntimeError:
+            self._retry_task = None  # no running loop — next wait_ready() retries
+
+    async def _retry_loop(self) -> None:
+        try:
+            while not self._connected:
+                failed = [s for s in self._states.values() if s.status == "failed"]
+                if not failed:
+                    return
+                due = min(s.next_retry_at for s in failed)
+                await asyncio.sleep(max(0.0, due - time.monotonic()))
+                await self.load_and_connect(force=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            emit_warning(f"[mcp] Background retry stopped: {e}")
+
+    # ── status introspection ──
+
+    def configured_servers(self) -> dict[str, dict]:
+        """Merged config for every configured server (reads the config files).
+
+        ``server_statuses()`` only knows servers that have been attempted, so a
+        status display that runs before the first connect would show nothing.
+        This reads the files on demand — cheap, and it is what ``/config`` and
+        ``/doctor`` need to report what *would* run.
+        """
+        if not self._configs:
+            self._configs = self._load_configs()
+        return dict(self._configs)
+
+    def server_statuses(self) -> list[dict]:
+        """Snapshot of every known server for `/mcp`-style status displays."""
+        names = dict.fromkeys([*self._configs, *self._states, *self._connections])
+        now = time.monotonic()
+        out = []
+        for name in names:
+            state = self._states.get(name)
+            conn = self._connections.get(name)
+            if state is None:
+                out.append({
+                    "name": name,
+                    "status": "connected" if conn else "pending",
+                    "transport": getattr(conn, "transport", None),
+                    "tool_count": 0,
+                    "error": None,
+                    "attempts": 0,
+                    "retry_in": 0.0,
+                })
+                continue
+            out.append({
+                "name": name,
+                "status": state.status,
+                "transport": state.transport,
+                "tool_count": state.tool_count,
+                "error": state.error,
+                "attempts": state.attempts,
+                "retry_in": (
+                    max(0.0, state.next_retry_at - now)
+                    if state.status == "failed"
+                    else 0.0
+                ),
+            })
+        return out
+
+    def status_counts(self) -> tuple[int, int]:
+        """(connected, total) across known servers — e.g. for a status bar."""
+        statuses = self.server_statuses()
+        connected = sum(1 for s in statuses if s["status"] == "connected")
+        return connected, len(statuses)
+
+    def tools_by_server(self) -> dict[str, list[str]]:
+        """Raw (unprefixed) tool names grouped by server, for ``/mcp tools``.
+
+        Raw names rather than ``mcp__server__tool``: the prefixed form is what
+        the model sees, but the operator is looking for the name in the server's
+        own docs.
+        """
+        grouped: dict[str, list[str]] = {}
+        for tool in self._tools:
+            server = str(tool.get("serverName", ""))
+            grouped.setdefault(server, []).append(str(tool.get("name", "")))
+        for names in grouped.values():
+            names.sort()
+        return grouped
 
     def _build_connection(self, name: str, cfg: dict) -> _McpConnection:
         _validate_server_name(name)
@@ -772,10 +1010,9 @@ class McpManager:
         for tool in self._tools:
             full_name = f"mcp__{tool['serverName']}__{tool['name']}"
             if not _NAME_RE.match(full_name) or len(full_name) > _MAX_PREFIXED_TOOL_LEN:
-                print(
+                emit_warning(
                     f"[mcp] Skipping tool '{full_name}': name must match "
-                    f"{_NAME_RE.pattern} and be at most {_MAX_PREFIXED_TOOL_LEN} chars",
-                    flush=True,
+                    f"{_NAME_RE.pattern} and be at most {_MAX_PREFIXED_TOOL_LEN} chars"
                 )
                 continue
             definitions.append({
@@ -789,18 +1026,36 @@ class McpManager:
         """Check if a tool name is an MCP-prefixed tool."""
         return name.startswith("mcp__")
 
-    def is_concurrency_safe(self, prefixed_name: str) -> bool:
-        """Whether this MCP tool may run in parallel with other tool calls.
+    def is_read_only_tool(self, prefixed_name: str) -> bool:
+        """Whether the server behind this MCP tool declares ``"readOnly": true``.
 
-        Opt-in per server via "readOnly": true — an MCP tool can have arbitrary
-        side effects, so running one concurrently with a sibling call is only
-        safe when the operator says the server is read-only.
+        ``readOnly`` is an operator statement that the server has no side
+        effects, and two separate decisions depend on it:
+
+        - **plan mode** denies every MCP tool whose server is not read-only.
+          Without this the model can call e.g. a "send mail" or "update row"
+          tool while the session is supposed to be read-only, because such a
+          name is unknown to the built-in permission rules.
+        - **concurrency**: only read-only servers may run in parallel with
+          sibling tool calls.
+
+        An unknown, malformed, or not-yet-connected server answers False:
+        "I cannot prove it is safe" must never be treated as "it is safe".
         """
         parts = prefixed_name.split("__")
         if len(parts) < 3:
             return False
         conn = self._connections.get(parts[1])
         return bool(conn and conn.read_only)
+
+    def is_concurrency_safe(self, prefixed_name: str) -> bool:
+        """Whether this MCP tool may run in parallel with other tool calls.
+
+        Same opt-in as :meth:`is_read_only_tool` — an MCP tool can have
+        arbitrary side effects, so running one concurrently with a sibling call
+        is only safe when the operator says the server is read-only.
+        """
+        return self.is_read_only_tool(prefixed_name)
 
     async def call_tool(self, prefixed_name: str, args: dict) -> str:
         """Route a prefixed tool call to the correct server.
@@ -828,14 +1083,27 @@ class McpManager:
             )
         except McpError as e:
             return f"[mcp] {e}"
-        except Exception as e:  # noqa: BLE001 - never break the agent loop
+        except Exception as e:
             return f"[mcp] Unexpected error calling '{prefixed_name}': {type(e).__name__}: {e}"
 
     async def disconnect_all(self) -> None:
         """Shut down every server. Safe to call more than once."""
+        for task in (self._connect_task, self._retry_task):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (self._connect_task, self._retry_task):
+            if task is not None and not task.done():
+                try:
+                    await task
+                except BaseException:
+                    pass
+        self._connect_task = None
+        self._retry_task = None
         connections = list(self._connections.values())
         self._connections.clear()
         self._tools.clear()
+        self._states.clear()
+        self._configs.clear()
         self._connected = False
         for conn in connections:
             try:
@@ -847,10 +1115,8 @@ class McpManager:
 
     def _load_configs(self) -> dict[str, dict]:
         merged: dict[str, dict] = {}
-        self._merge_config_file(INSTALL_ROOT / ".mcp.json", merged)
-        self._merge_config_file(Path.home() / ".claude" / "settings.json", merged)
-        self._merge_config_file(Path.cwd() / ".claude" / "settings.json", merged)
-        self._merge_config_file(Path.cwd() / ".mcp.json", merged)
+        for path in config_search_paths():
+            self._merge_config_file(path, merged)
         return merged
 
     def _merge_config_file(self, path: Path, target: dict[str, dict]) -> None:
@@ -859,7 +1125,7 @@ class McpManager:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[mcp] Ignoring malformed config {path}: {e}", flush=True)
+            emit_warning(f"[mcp] Ignoring malformed config {path}: {e}")
             return
         if not isinstance(raw, dict):
             return
@@ -876,10 +1142,9 @@ class McpManager:
                 config = {**config, "url": config["serverUrl"]}
             if "command" not in config and "url" not in config:
                 if strict:
-                    print(
+                    emit_warning(
                         f"[mcp] Ignoring '{name}' in {path.name}: "
-                        f"needs a 'command' (stdio) or 'url' (HTTP) field",
-                        flush=True,
+                        f"needs a 'command' (stdio) or 'url' (HTTP) field"
                     )
                 continue
             target[name] = config

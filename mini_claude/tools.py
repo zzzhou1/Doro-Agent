@@ -10,10 +10,10 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from .memory import get_memory_dir
-from .frontmatter import parse_frontmatter
 
 # ─── Permission modes ──────────────────────────────────────
 
@@ -21,6 +21,11 @@ PermissionMode = str  # "default" | "plan" | "acceptEdits" | "bypassPermissions"
 
 READ_TOOLS = {"read_file", "list_files", "grep_search", "web_fetch"}
 EDIT_TOOLS = {"write_file", "edit_file"}
+
+# MCP tools arrive prefixed as mcp__{server}__{tool}. Their names are unknown
+# to the rules below, so every gate that must not blanket-allow them has to
+# match the prefix itself.
+MCP_TOOL_PREFIX = "mcp__"
 
 # Concurrency-safe tools can run in parallel (read-only, no side effects)
 CONCURRENCY_SAFE_TOOLS = {"read_file", "list_files", "grep_search", "web_fetch"}
@@ -217,7 +222,7 @@ def _write_file(inp: dict) -> str:
         _auto_update_memory_index(str(path))
         lines = inp["content"].split("\n")
         line_count = len(lines)
-        preview = "\n".join(f"{i+1:4d} | {l}" for i, l in enumerate(lines[:30]))
+        preview = "\n".join(f"{i+1:4d} | {line}" for i, line in enumerate(lines[:30]))
         trunc = f"\n  ... ({line_count} lines total)" if line_count > 30 else ""
         return f"Successfully wrote to {inp['file_path']} ({line_count} lines)\n\n{preview}{trunc}"
     except Exception as e:
@@ -277,10 +282,10 @@ def _generate_diff(old_content: str, old_string: str, new_string: str) -> str:
     new_lines = new_string.split("\n")
 
     parts = [f"@@ -{line_num},{len(old_lines)} +{line_num},{len(new_lines)} @@"]
-    for l in old_lines:
-        parts.append(f"- {l}")
-    for l in new_lines:
-        parts.append(f"+ {l}")
+    for line in old_lines:
+        parts.append(f"- {line}")
+    for line in new_lines:
+        parts.append(f"+ {line}")
     return "\n".join(parts)
 
 
@@ -349,7 +354,7 @@ def _grep_search(inp: dict) -> str:
             if result.returncode == 1:
                 return "No matches found."
             if result.returncode == 0:
-                lines = [l for l in result.stdout.split("\n") if l]
+                lines = [line for line in result.stdout.split("\n") if line]
                 output = "\n".join(lines[:100])
                 if len(lines) > 100:
                     output += f"\n... and {len(lines) - 100} more matches"
@@ -426,8 +431,8 @@ def _run_shell(inp: dict) -> str:
 
 
 def _web_fetch(inp: dict) -> str:
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = inp.get("url", "")
     max_length = inp.get("max_length", 50000)
@@ -567,8 +572,18 @@ def check_permission(
     inp: dict,
     mode: str = "default",
     plan_file_path: str | None = None,
+    mcp_read_only: Callable[[str], bool] | None = None,
 ) -> dict:
-    """Returns {"action": "allow"|"deny"|"confirm", "message": ...}"""
+    """Returns {"action": "allow"|"deny"|"confirm", "message": ...}
+
+    ``mcp_read_only`` answers "does this MCP tool's server declare
+    ``readOnly: true``?" (``McpManager.is_read_only_tool``). Plan mode needs it
+    because MCP tool names appear in neither ``READ_TOOLS`` nor ``EDIT_TOOLS``,
+    so without this gate they would fall through to the final ``allow`` and the
+    model could fire a side-effecting tool from a read-only session. Omitting it
+    denies every MCP tool in plan mode — failing closed is the only safe default
+    for a name we cannot classify.
+    """
     if mode == "bypassPermissions":
         return {"action": "allow"}
 
@@ -589,6 +604,16 @@ def check_permission(
             return {"action": "deny", "message": f"Blocked in plan mode: {tool_name}"}
         if tool_name == "run_shell":
             return {"action": "deny", "message": "Shell commands blocked in plan mode"}
+        if tool_name.startswith(MCP_TOOL_PREFIX):
+            if mcp_read_only is not None and mcp_read_only(tool_name):
+                return {"action": "allow"}
+            return {
+                "action": "deny",
+                "message": (
+                    "MCP tool blocked in plan mode "
+                    f"(server not declared read-only): {tool_name}"
+                ),
+            }
 
     if tool_name in ("enter_plan_mode", "exit_plan_mode"):
         return {"action": "allow"}

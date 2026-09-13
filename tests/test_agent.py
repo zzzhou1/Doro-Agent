@@ -54,7 +54,7 @@ def test_switch_model_keeps_backend_and_refreshes_model_state() -> None:
     assert agent.switch_model("  custom-model  ") == "custom-model"
     assert agent.model == "custom-model"
     assert agent.backend == "openai"
-    assert agent.effective_window == 180000
+    assert agent.effective_window == 252000
     assert agent.reasoning_effort == "high"
     assert agent._thinking_mode == "reasoning"
     with pytest.raises(ValueError, match="empty"):
@@ -331,7 +331,7 @@ async def test_mcp_initialization_retries_and_deduplicates_tools() -> None:
         "input_schema": {"type": "object", "properties": {}},
     }
     manager = SimpleNamespace(
-        load_and_connect=AsyncMock(side_effect=[False, True]),
+        wait_ready=AsyncMock(side_effect=[False, True]),
         get_tool_definitions=Mock(side_effect=[[], [tool]]),
     )
     agent._mcp_manager = manager
@@ -346,5 +346,5 @@ async def test_mcp_initialization_retries_and_deduplicates_tools() -> None:
 
     # Once initialized, later calls are cheap and cannot duplicate definitions.
     await agent._ensure_mcp_initialized()
-    assert manager.load_and_connect.await_count == 2
+    assert manager.wait_ready.await_count == 2
     assert [item["name"] for item in agent.tools] == ["mcp__demo__lookup"]

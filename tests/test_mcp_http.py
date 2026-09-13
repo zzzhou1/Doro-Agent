@@ -9,9 +9,9 @@ import httpx
 import pytest
 
 from mini_claude.mcp_client import (
+    _MAX_PREFIXED_TOOL_LEN,
     HttpMcpConnection,
     McpError,
-    _MAX_PREFIXED_TOOL_LEN,
 )
 
 TOOLS = [

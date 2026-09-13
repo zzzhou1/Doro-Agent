@@ -6,8 +6,8 @@ from mini_claude.status import (
     format_status_lines,
     format_status_toolbar,
     format_token_limit,
-    truncate_start,
     truncate_middle,
+    truncate_start,
 )
 
 

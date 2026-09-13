@@ -4,35 +4,41 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import signal
 import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from prompt_toolkit.patch_stdout import patch_stdout
 
-from .agent import Agent, BACKEND_MODEL_ENV, default_model_for
-from .ui import (
-    live_status,
-    print_error,
-    print_info,
-    print_plan_approval_options,
-    print_plan_for_approval,
-    print_user_prompt,
-    print_welcome,
-    suspend_live_status,
-)
-from .session import load_session, get_latest_session_id, list_sessions
-from .memory import list_memories
-from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
+from .agent import BACKEND_MODEL_ENV, Agent, default_model_for
+from .commands import COMMAND_REGISTRY, find_command, format_help_section
+from .diagnostics import build_config_report, build_doctor_report
 from .interactive import create_repl_prompt_session, prompt_choice
+from .memory import list_memories
 from .reasoning import (
     BACKEND_REASONING_ENV,
     DEFAULT_REASONING_EFFORT,
     REASONING_EFFORTS,
     normalize_reasoning_effort,
 )
-
+from .session import get_latest_session_id, list_sessions, load_session
+from .skills import discover_skills, execute_skill, get_skill_by_name, resolve_skill_prompt
+from .ui import (
+    live_status,
+    print_error,
+    print_info,
+    print_panel,
+    print_plan_approval_options,
+    print_plan_for_approval,
+    print_user_prompt,
+    print_welcome,
+    suspend_live_status,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,21 +146,22 @@ def _resolve_api_config(args: argparse.Namespace) -> tuple[str, str | None, str 
 def _resolve_model(args: argparse.Namespace, backend: str) -> tuple[str, str]:
     """Resolve the model for ``backend``, plus a label saying where it came from.
 
-    Precedence: ``--model`` > ``MINI_CLAUDE_MODEL`` (global, every backend) >
-    ``ANTHROPIC_MODEL`` / ``OPENAI_MODEL`` (that backend only) > the built-in
-    default for that backend. The backend has to be resolved first for a
-    per-backend default to exist at all: the previous code inferred "the user
-    did not pick a model" by comparing the name against a hardcoded Claude id,
-    which also silently rewrote an *explicit* ``--model claude-...`` on the
-    OpenAI backend.
+    Precedence: ``--model`` > ``ANTHROPIC_MODEL`` / ``OPENAI_MODEL`` (that
+    backend only) > the built-in default for that backend. The backend has to be
+    resolved first for a per-backend default to exist at all: the previous code
+    inferred "the user did not pick a model" by comparing the name against a
+    hardcoded Claude id, which also silently rewrote an *explicit*
+    ``--model claude-...`` on the OpenAI backend.
+
+    ``MINI_CLAUDE_MODEL`` used to sit in this chain and applied to *every*
+    backend, so a name meant for one provider silently travelled to the other
+    (``gpt-5.6-sol`` sent to Anthropic, ``claude-opus-5`` to an OpenAI gateway).
+    It was removed — set the per-backend variable instead.
     """
-    global_env = os.environ.get("MINI_CLAUDE_MODEL", "").strip()
     backend_env_name = BACKEND_MODEL_ENV[backend]
     backend_env = os.environ.get(backend_env_name, "").strip()
     if args.model:
         return args.model, "--model"
-    if global_env:
-        return global_env, "MINI_CLAUDE_MODEL"
     if backend_env:
         return backend_env, backend_env_name
     return default_model_for(backend), f"default for {backend}"
@@ -183,6 +190,34 @@ def _resolve_reasoning_effort(
     if args.thinking:
         return "high", "--thinking", configured_default, True
     return configured_default, default_source, configured_default, False
+
+
+@contextlib.contextmanager
+def _prompt_output_guard():
+    """Route stdout through prompt_toolkit while the prompt is active.
+
+    MCP warm-up/retry messages can land mid-prompt; patch_stdout() prints them
+    above the prompt and redraws the prompt + status toolbar. raw=True because
+    everything we print is pre-rendered by Rich and already carries ANSI
+    escapes — raw=False would write them as literal text ("?[36m"). With no
+    real console attached (piped output, CI, tests) prompt_toolkit can't
+    create its output — fall back to plain stdout; there is nothing on screen
+    to protect.
+    """
+    guard = None
+    try:
+        guard = patch_stdout(raw=True)
+        guard.__enter__()
+    except Exception:
+        guard = None
+    try:
+        yield
+    finally:
+        if guard is not None:
+            try:
+                guard.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 async def run_repl(agent: Agent, prompt_session=None) -> None:
@@ -239,6 +274,12 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
 
     agent.set_plan_approval_fn(plan_approval_fn)
 
+    validate_handlers()
+    repl_ctx = _ReplContext(
+        agent=agent,
+        status_safe_input=status_safe_input,
+    )
+
     sigint_count = 0
 
     def handle_sigint(sig, frame):
@@ -258,11 +299,13 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
             print_user_prompt()
 
     signal.signal(signal.SIGINT, handle_sigint)
+    agent.start_mcp_background()  # warm up servers while the user types
     print_welcome()
 
     while True:
         try:
-            line = await prompt_session.prompt_async()
+            with _prompt_output_guard():
+                line = await prompt_session.prompt_async()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!\n")
             break
@@ -276,163 +319,21 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
             print("\nBye!\n")
             break
 
-        # REPL commands
-        if inp == "/clear":
-            agent.clear_history()
-            continue
-        if inp == "/plan":
-            agent.toggle_plan_mode()
-            continue
-        if inp == "/cost":
-            agent.show_cost()
-            continue
-        if inp == "/model":
-            try:
-                models = await agent.list_models()
-                selector = await prompt_choice(
-                    f"Models from {agent.backend} ({len(models)}):",
-                    [
-                        (
-                            model,
-                            f"{index}. {model}"
-                            + (" ← current" if model == agent.model else ""),
-                        )
-                        for index, model in enumerate(models, start=1)
-                    ],
-                    initial_value=agent.model,
-                )
-                if selector:
-                    old_model = agent.model
-                    new_model = agent.switch_model(
-                        _resolve_model_selector(selector, models)
-                    )
-                    print_info(
-                        f"Model switched: {old_model} → {new_model} "
-                        f"(backend remains {agent.backend})"
-                    )
-            except Exception as e:
-                print_error(str(e))
-                print_info(
-                    f"Current model: {agent.model}. "
-                    "You can still use /model <name> to switch manually."
-                )
-            continue
-        if inp.startswith("/model "):
-            try:
-                old_model = agent.model
-                new_model = agent.switch_model(inp[len("/model "):])
-                print_info(
-                    f"Model switched: {old_model} → {new_model} "
-                    f"(backend remains {agent.backend})"
-                )
-            except ValueError as e:
-                print_error(str(e))
-            continue
-        if inp == "/effort":
-            efforts = agent.available_reasoning_efforts()
-            selector = await prompt_choice(
-                f"Reasoning effort for {agent.backend}:",
-                [
-                    (
-                        effort,
-                        effort
-                        + (" ← current" if effort == agent.reasoning_effort else "")
-                        + (
-                            " (default)"
-                            if effort == agent.default_reasoning_effort
-                            else ""
-                        ),
-                    )
-                    for effort in efforts
-                ],
-                initial_value=agent.reasoning_effort,
-            )
-            if selector:
-                try:
-                    agent.set_reasoning_effort(selector)
-                    print_info(f"Reasoning effort: {agent.reasoning_effort}")
-                except ValueError as e:
-                    print_error(str(e))
-            continue
-        if inp.startswith("/effort "):
-            requested = inp[len("/effort "):].strip()
-            try:
-                if requested.lower() == "default":
-                    agent.reset_reasoning_effort()
-                else:
-                    agent.set_reasoning_effort(requested)
-                print_info(f"Reasoning effort: {agent.reasoning_effort}")
-            except ValueError as e:
-                print_error(str(e))
-            continue
-        if inp == "/sessions":
-            _print_session_list(_sessions_for_agent(agent))
-            continue
-        is_resume = inp == "/resume" or inp.startswith("/resume ")
-        is_session = inp == "/session" or inp.startswith("/session ")
-        if is_resume or is_session:
-            command = "/resume" if is_resume else "/session"
-            selector = inp[len(command):].strip()
-            sessions = _sessions_for_agent(agent)
-            if not selector:
-                if not sessions:
-                    print_info("No sessions found for this project and backend.")
-                    continue
-                selector = await prompt_choice(
-                    f"Sessions for this project ({len(sessions)}):",
-                    [
-                        (str(metadata["id"]), _session_choice_label(index, metadata))
-                        for index, metadata in enumerate(sessions, start=1)
-                        if metadata.get("id")
-                    ],
-                )
-                if not selector:
-                    continue
-            try:
-                session_id = _resolve_session_selector(selector, sessions)
-                if agent.has_conversation_history():
-                    try:
-                        answer = status_safe_input("  Replace the current conversation? (y/n): ").strip()
-                    except EOFError:
-                        answer = "n"
-                    if not answer.lower().startswith("y"):
-                        print_info("Resume cancelled.")
-                        continue
-                _restore_agent_session(agent, session_id)
-            except ValueError as e:
-                print_error(str(e))
-            continue
-        if inp == "/compact":
-            try:
-                await agent.compact()
-            except Exception as e:
-                print_error(str(e))
-            continue
-        if inp == "/memory":
-            memories = list_memories()
-            if not memories:
-                print_info("No memories saved yet.")
-            else:
-                print_info(f"{len(memories)} memories:")
-                for m in memories:
-                    print(f"    [{m.type}] {m.name} — {m.description}")
-            continue
-        if inp == "/skills":
-            skills = discover_skills()
-            if not skills:
-                print_info("No skills found. Add skills to .claude/skills/<name>/SKILL.md")
-            else:
-                print_info(f"{len(skills)} skills:")
-                for s in skills:
-                    tag = f"/{s.name}" if s.user_invocable else s.name
-                    print(f"    {tag} ({s.source}) — {s.description}")
-            continue
-
-        # Skill invocation: /<skill-name> [args]
+        # Built-in commands and skill invocations share the /-namespace
         if inp.startswith("/"):
             space_idx = inp.find(" ")
             cmd_name = inp[1:space_idx] if space_idx > 0 else inp[1:]
-            cmd_args = inp[space_idx + 1:] if space_idx > 0 else ""
+            cmd_args = inp[space_idx + 1:].strip() if space_idx > 0 else ""
+
+            # Dispatch from the unified registry (commands.COMMAND_REGISTRY).
+            # Commands without takes_args fall through on trailing text so
+            # "/clear please" still reaches skill lookup / chat, as before.
+            spec = find_command(cmd_name)
+            if spec is not None and (not cmd_args or spec.takes_args):
+                await _REPL_HANDLERS[spec.name](repl_ctx, cmd_args)
+                continue
+
+            # Skill invocation: /<skill-name> [args]
             skill = get_skill_by_name(cmd_name)
             if skill and skill.user_invocable:
                 print_info(f"Invoking skill: {skill.name}")
@@ -455,6 +356,310 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
         except Exception as e:
             if "abort" not in str(e).lower():
                 print_error(str(e))
+
+
+# ─── REPL command handlers ────────────────────────────────
+# One handler per CommandSpec in commands.COMMAND_REGISTRY, keyed by spec
+# name. validate_handlers() (run at REPL start and in tests) keeps this map
+# and the registry in lockstep, so a command cannot exist in one place only.
+
+
+@dataclass
+class _ReplContext:
+    """What a command handler may touch: the agent and status-safe input."""
+
+    agent: Agent
+    status_safe_input: Callable[[str], str]
+
+
+CommandHandler = Callable[[_ReplContext, str], Awaitable[None]]
+_REPL_HANDLERS: dict[str, CommandHandler] = {}
+
+
+def _handles(*names: str) -> Callable[[CommandHandler], CommandHandler]:
+    def register(fn: CommandHandler) -> CommandHandler:
+        for name in names:
+            _REPL_HANDLERS[name] = fn
+        return fn
+
+    return register
+
+
+def validate_handlers() -> None:
+    """Fail loudly if the handler map and the command registry drift apart."""
+    spec_names = {spec.name for spec in COMMAND_REGISTRY}
+    handler_names = set(_REPL_HANDLERS)
+    missing = sorted(spec_names - handler_names)
+    extra = sorted(handler_names - spec_names)
+    if missing or extra:
+        problems = []
+        if missing:
+            problems.append(f"commands without a handler: {', '.join(missing)}")
+        if extra:
+            problems.append(f"handlers without a CommandSpec: {', '.join(extra)}")
+        raise RuntimeError("Command registry mismatch — " + "; ".join(problems))
+
+
+@_handles("clear")
+async def _cmd_clear(ctx: _ReplContext, _args: str) -> None:
+    ctx.agent.clear_history()
+
+
+@_handles("plan")
+async def _cmd_plan(ctx: _ReplContext, _args: str) -> None:
+    ctx.agent.toggle_plan_mode()
+
+
+@_handles("cost")
+async def _cmd_cost(ctx: _ReplContext, _args: str) -> None:
+    ctx.agent.show_cost()
+
+
+@_handles("model")
+async def _cmd_model(ctx: _ReplContext, args: str) -> None:
+    agent = ctx.agent
+    if args:
+        try:
+            old_model = agent.model
+            new_model = agent.switch_model(args)
+            print_info(
+                f"Model switched: {old_model} → {new_model} "
+                f"(backend remains {agent.backend})"
+            )
+        except ValueError as e:
+            print_error(str(e))
+        return
+    try:
+        models = await agent.list_models()
+        selector = await prompt_choice(
+            f"Models from {agent.backend} ({len(models)}):",
+            [
+                (
+                    model,
+                    f"{index}. {model}"
+                    + (" ← current" if model == agent.model else ""),
+                )
+                for index, model in enumerate(models, start=1)
+            ],
+            initial_value=agent.model,
+        )
+        if selector:
+            old_model = agent.model
+            new_model = agent.switch_model(
+                _resolve_model_selector(selector, models)
+            )
+            print_info(
+                f"Model switched: {old_model} → {new_model} "
+                f"(backend remains {agent.backend})"
+            )
+    except Exception as e:
+        print_error(str(e))
+        print_info(
+            f"Current model: {agent.model}. "
+            "You can still use /model <name> to switch manually."
+        )
+
+
+@_handles("effort")
+async def _cmd_effort(ctx: _ReplContext, args: str) -> None:
+    agent = ctx.agent
+    if args:
+        try:
+            if args.lower() == "default":
+                agent.reset_reasoning_effort()
+            else:
+                agent.set_reasoning_effort(args)
+            print_info(f"Reasoning effort: {agent.reasoning_effort}")
+        except ValueError as e:
+            print_error(str(e))
+        return
+    efforts = agent.available_reasoning_efforts()
+    selector = await prompt_choice(
+        f"Reasoning effort for {agent.backend}:",
+        [
+            (
+                effort,
+                effort
+                + (" ← current" if effort == agent.reasoning_effort else "")
+                + (
+                    " (default)"
+                    if effort == agent.default_reasoning_effort
+                    else ""
+                ),
+            )
+            for effort in efforts
+        ],
+        initial_value=agent.reasoning_effort,
+    )
+    if selector:
+        try:
+            agent.set_reasoning_effort(selector)
+            print_info(f"Reasoning effort: {agent.reasoning_effort}")
+        except ValueError as e:
+            print_error(str(e))
+
+
+@_handles("sessions")
+async def _cmd_sessions(ctx: _ReplContext, _args: str) -> None:
+    _print_session_list(_sessions_for_agent(ctx.agent))
+
+
+@_handles("session", "resume")
+async def _cmd_resume(ctx: _ReplContext, args: str) -> None:
+    agent = ctx.agent
+    selector: str | None = args
+    sessions = _sessions_for_agent(agent)
+    if not selector:
+        if not sessions:
+            print_info("No sessions found for this project and backend.")
+            return
+        selector = await prompt_choice(
+            f"Sessions for this project ({len(sessions)}):",
+            [
+                (str(metadata["id"]), _session_choice_label(index, metadata))
+                for index, metadata in enumerate(sessions, start=1)
+                if metadata.get("id")
+            ],
+        )
+        if not selector:
+            return
+    try:
+        session_id = _resolve_session_selector(selector, sessions)
+        if agent.has_conversation_history():
+            try:
+                answer = ctx.status_safe_input("  Replace the current conversation? (y/n): ").strip()
+            except EOFError:
+                answer = "n"
+            if not answer.lower().startswith("y"):
+                print_info("Resume cancelled.")
+                return
+        _restore_agent_session(agent, session_id)
+    except ValueError as e:
+        print_error(str(e))
+
+
+@_handles("compact")
+async def _cmd_compact(ctx: _ReplContext, _args: str) -> None:
+    try:
+        await ctx.agent.compact()
+    except Exception as e:
+        print_error(str(e))
+
+
+@_handles("memory")
+async def _cmd_memory(ctx: _ReplContext, _args: str) -> None:
+    memories = list_memories()
+    if not memories:
+        print_info("No memories saved yet.")
+    else:
+        print_info(f"{len(memories)} memories:")
+        for m in memories:
+            print(f"    [{m.type}] {m.name} — {m.description}")
+
+
+@_handles("skills")
+async def _cmd_skills(ctx: _ReplContext, _args: str) -> None:
+    skills = discover_skills()
+    if not skills:
+        print_info("No skills found. Add skills to .claude/skills/<name>/SKILL.md")
+    else:
+        print_info(f"{len(skills)} skills:")
+        for s in skills:
+            tag = f"/{s.name}" if s.user_invocable else s.name
+            print(f"    {tag} ({s.source}) — {s.description}")
+
+
+_MCP_STATUS_MARKERS = {
+    "connected": "●",
+    "connecting": "…",
+    "pending": "○",
+    "failed": "✗",
+    "skipped": "–",
+}
+
+
+def _mcp_status_lines(agent: Agent) -> list[str]:
+    """One row per server: state, transport, tool count, error, retry countdown."""
+    statuses = agent.mcp_statuses()
+    if not statuses:
+        return [
+            "No MCP servers configured.",
+            "Add one to .mcp.json ({\"mcpServers\": {...}}), then run /mcp reconnect.",
+        ]
+    connected, total = agent.mcp_manager.status_counts()
+    lines = [f"{connected}/{total} connected"]
+    for status in statuses:
+        marker = _MCP_STATUS_MARKERS.get(status["status"], "?")
+        row = f"{marker} {status['name']:<16}{status['status']:<11}"
+        row += f"{(status.get('transport') or '-'):<7}"
+        if status["status"] == "connected":
+            row += f"{status['tool_count']} tools"
+        else:
+            row += "-"
+        if status.get("error"):
+            row += f"   — {status['error']}"
+        if status["status"] == "failed" and status.get("retry_in"):
+            row += (
+                f"   (retry in {int(status['retry_in'])}s, "
+                f"attempts {status['attempts']})"
+            )
+        lines.append(row)
+    return lines
+
+
+def _mcp_tool_lines(agent: Agent) -> list[str]:
+    grouped = agent.mcp_tools_by_server()
+    if not grouped:
+        return [
+            "No MCP tools discovered.",
+            "Run /mcp reconnect to (re)connect the configured servers.",
+        ]
+    total = sum(len(names) for names in grouped.values())
+    servers = len(grouped)
+    lines = [
+        f"{total} tool{'' if total == 1 else 's'} across "
+        f"{servers} server{'' if servers == 1 else 's'}"
+    ]
+    for server in sorted(grouped):
+        names = grouped[server]
+        lines.append(f"{server} ({len(names)})")
+        lines.extend(f"  {name}" for name in names)
+    return lines
+
+
+@_handles("mcp")
+async def _cmd_mcp(ctx: _ReplContext, args: str) -> None:
+    """`/mcp`, `/mcp tools`, `/mcp reconnect`."""
+    agent = ctx.agent
+    action = args.strip().lower()
+    if action not in ("", "tools", "reconnect"):
+        print_error(
+            f"Unknown /mcp subcommand {args!r}. "
+            "Use /mcp, /mcp tools, or /mcp reconnect."
+        )
+        return
+    # Read configs even if the background warm-up has not finished/failed yet,
+    # so an immediately-typed /mcp still lists the configured servers.
+    agent.mcp_manager.configured_servers()
+    if action == "reconnect":
+        print_info("Reconnecting MCP servers...")
+        await agent.reconnect_mcp()
+    if action == "tools":
+        print_panel("MCP tools", _mcp_tool_lines(agent))
+        return
+    print_panel("MCP servers", _mcp_status_lines(agent))
+
+
+@_handles("config")
+async def _cmd_config(ctx: _ReplContext, _args: str) -> None:
+    title, lines = build_config_report(ctx.agent)
+    print_panel(title, lines)
+
+
+@_handles("doctor")
+async def _cmd_doctor(ctx: _ReplContext, _args: str) -> None:
+    title, lines = build_doctor_report(ctx.agent)
+    print_panel(title, lines)
 
 
 def _sessions_for_agent(agent: Agent) -> list[dict]:
@@ -565,7 +770,7 @@ def main() -> None:
     _load_project_env(env_file=args.env_file)
 
     if args.help:
-        print("""
+        print(f"""
 Usage: mini-claude [options] [prompt]
 
 Options:
@@ -577,8 +782,8 @@ Options:
                       (default: medium; provider/model support varies)
   --thinking          Backward-compatible alias for --effort high
   --model, -m         Model to use (default per backend: anthropic=claude-opus-5,
-                      openai=gpt-5.6-sol; override with MINI_CLAUDE_MODEL for all
-                      backends, or ANTHROPIC_MODEL / OPENAI_MODEL for one)
+                      openai=gpt-5.6-sol; override with ANTHROPIC_MODEL or
+                      OPENAI_MODEL, which affect only their own backend)
   --api-base URL      Use OpenAI-compatible API endpoint (key via env var)
   --env-file PATH     Read env vars from PATH instead of searching for .env
   --resume            Resume the last session
@@ -587,20 +792,7 @@ Options:
   --help, -h          Show this help
 
 REPL commands:
-  /clear              Clear conversation history
-  /plan               Toggle plan mode (read-only <-> normal)
-  /cost               Show token usage and cost
-  /model              List models and select one interactively
-  /model NAME         Switch model within the current backend
-  /effort             Select reasoning effort interactively
-  /effort LEVEL       Change effort; use "default" to reset configuration
-  /session            Select and resume a saved session
-  /sessions           List sessions for this project and backend
-  /resume [N|ID]      Select and resume a saved session
-  /compact            Manually compact conversation
-  /memory             List saved memories
-  /skills             List available skills
-  /<skill-name>       Invoke a skill (e.g. /commit "fix types")
+{format_help_section()}
 
 Examples:
   mini-claude "fix the bug in app.py"
@@ -648,6 +840,8 @@ Examples:
             api_base=resolved_api_base if resolved_backend == "openai" else None,
             anthropic_base_url=resolved_api_base if resolved_backend == "anthropic" else None,
             api_key=resolved_api_key,
+            model_source=model_source,
+            effort_source=effort_source,
         )
     except ValueError as e:
         print_error(str(e))

@@ -7,7 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .frontmatter import parse_frontmatter
-from .tools import tool_definitions, ToolDef
+from .output import emit_warning
+from .tools import tool_definitions
 
 # ─── Read-only tools (for explore and plan agents) ──────────
 
@@ -113,8 +114,13 @@ def _load_agents_from_dir(directory: Path, agents: dict[str, dict]) -> None:
                 "allowed_tools": allowed_tools,
                 "system_prompt": result.body,
             }
-        except Exception:
-            pass
+        except Exception as error:
+            # A broken agent definition used to look exactly like a missing one
+            # — the agent simply was not offered, with no hint as to why.
+            emit_warning(
+                f"[agents] Skipping '{entry.name}': "
+                f"{type(error).__name__}: {error}"
+            )
 
 
 # ─── Main config function ───────────────────────────────────

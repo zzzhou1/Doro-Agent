@@ -97,6 +97,19 @@ def _mode_label(snapshot: Mapping[str, Any]) -> str:
     return mode
 
 
+def _mcp_label(snapshot: Mapping[str, Any]) -> str:
+    """``mcp: 2/3`` when the snapshot carries MCP counts, otherwise empty.
+
+    Returning "" for snapshots without MCP state is deliberate: the status bar
+    is width-budgeted, so an absent segment must cost zero columns.
+    """
+    total = int(snapshot.get("mcp_total") or 0)
+    if total <= 0:
+        return ""
+    connected = int(snapshot.get("mcp_connected") or 0)
+    return f"mcp: {connected}/{total}"
+
+
 def format_status_lines(
     snapshot: Mapping[str, Any], width: int | None = None
 ) -> tuple[str, str, str]:
@@ -125,6 +138,9 @@ def format_status_lines(
         right = model
     if width >= 78:
         right += f" • {_mode_label(snapshot)}"
+    mcp = _mcp_label(snapshot)
+    if mcp:
+        right += f" · {mcp}"
 
     gap = 3
     left_width = _display_width(left)
@@ -176,6 +192,9 @@ def format_status_toolbar(
         right_parts.append(f"${float(snapshot.get('cost_usd') or 0):.4f}")
     if width >= 145 and snapshot.get("session_id"):
         right_parts.append(str(snapshot["session_id"]))
+    mcp = _mcp_label(snapshot)
+    if mcp:
+        right_parts.append(mcp)
     right_parts.append(identity)
     if width >= 90:
         right_parts.append(_mode_label(snapshot))

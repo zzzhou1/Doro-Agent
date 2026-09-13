@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .output import emit_warning
+
 SESSION_DIR = Path.home() / ".mini-claude" / "sessions"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -45,7 +47,13 @@ def load_session(session_id: str) -> dict[str, Any] | None:
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as error:
+        # A corrupt file used to vanish silently: the CLI behaved as if the
+        # session never existed, with nothing to explain why.
+        emit_warning(
+            f"[session] Ignoring unreadable session '{path.stem}': "
+            f"{type(error).__name__}: {error}"
+        )
         return None
 
 
@@ -105,8 +113,13 @@ def list_sessions(
                 metadata = dict(metadata)
                 metadata["preview"] = _conversation_preview(data, stored_backend)
             results.append(metadata)
-        except Exception:
-            pass
+        except Exception as error:
+            # Same reasoning as load_session: report instead of silently
+            # dropping the entry from the list.
+            emit_warning(
+                f"[session] Skipping session file '{f.name}': "
+                f"{type(error).__name__}: {error}"
+            )
     results.sort(
         key=lambda item: item.get("updatedAt") or item.get("startTime", ""),
         reverse=True,
