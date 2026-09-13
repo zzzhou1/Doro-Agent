@@ -154,7 +154,11 @@ def format_status_toolbar(
     whole screen on Windows terminals, so the idle layout is intentionally
     compact and Rich Live uses the same layout during work.
     """
-    requested_width = terminal_width() if width is None else width
+    # Prompt Toolkit paints the bottom toolbar through the terminal's final
+    # column. Windows Terminal may reserve or auto-wrap that cell, clipping the
+    # final character (for example ``think:mediu``). Explicit widths are exact
+    # test/layout budgets; only auto-detected terminal widths need the margin.
+    requested_width = terminal_width() - 1 if width is None else width
     width = max(int(requested_width), 1)
     used = max(int(snapshot.get("context_used") or 0), 0)
     limit = max(int(snapshot.get("context_window") or 0), 0)

@@ -98,6 +98,17 @@ def test_prompt_toolbar_is_single_line_and_keeps_required_fields() -> None:
     assert _width(line) == 100
 
 
+def test_prompt_toolbar_auto_width_reserves_the_terminal_final_column(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("mini_claude.status.terminal_width", lambda: 100)
+
+    line = format_status_toolbar(_snapshot())
+
+    assert _width(line) == 99
+    assert line.endswith("normal · think:medium")
+
+
 def test_prompt_toolbar_stays_single_line_when_narrow() -> None:
     for width in (20, 32, 48, 60):
         line = format_status_toolbar(_snapshot(), width=width)
