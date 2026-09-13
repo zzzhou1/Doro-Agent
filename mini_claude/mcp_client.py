@@ -3,9 +3,10 @@ MCP Client — connects to MCP servers over stdio or HTTP/SSE, discovers and
 forwards tool calls. Raw JSON-RPC 2.0, no MCP SDK dependency.
 
 Config sources (read in order — later files win on name collisions):
-  1. ~/.claude/settings.json
-  2. ./.claude/settings.json
-  3. ./.mcp.json
+  1. <installation root>/.mcp.json
+  2. ~/.claude/settings.json
+  3. ./.claude/settings.json
+  4. ./.mcp.json
 
 stdio server — the server runs as a local subprocess:
   "mcpServers": {
@@ -45,6 +46,7 @@ from urllib.parse import urljoin
 
 
 IS_WIN = sys.platform == "win32"
+INSTALL_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_CONNECT_TIMEOUT = 15.0
 DEFAULT_TOOL_TIMEOUT = 60.0
@@ -845,6 +847,7 @@ class McpManager:
 
     def _load_configs(self) -> dict[str, dict]:
         merged: dict[str, dict] = {}
+        self._merge_config_file(INSTALL_ROOT / ".mcp.json", merged)
         self._merge_config_file(Path.home() / ".claude" / "settings.json", merged)
         self._merge_config_file(Path.cwd() / ".claude" / "settings.json", merged)
         self._merge_config_file(Path.cwd() / ".mcp.json", merged)

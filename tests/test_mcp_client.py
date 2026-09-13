@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import mini_claude.mcp_client as mcp_client
 from mini_claude.mcp_client import McpConnection, McpError, McpManager, McpTimeoutError
 
 
@@ -247,6 +248,28 @@ def test_serverurl_is_accepted_as_an_alias_for_url(tmp_path) -> None:
     McpManager()._merge_config_file(path, target)
 
     assert target["remote"]["url"] == "https://host.test/mcp"
+
+
+def test_install_root_config_is_loaded_outside_working_directory(
+    tmp_path, monkeypatch
+) -> None:
+    install_root = tmp_path / "install"
+    home = tmp_path / "home"
+    working = tmp_path / "working"
+    install_root.mkdir()
+    home.mkdir()
+    working.mkdir()
+    (install_root / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"demo": {"command": "python"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mcp_client, "INSTALL_ROOT", install_root)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: working))
+
+    configs = McpManager()._load_configs()
+
+    assert list(configs) == ["demo"]
 
 
 @pytest.mark.asyncio

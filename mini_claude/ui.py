@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-from .status import format_status_lines
+from .status import format_status_toolbar, truncate_end, truncate_start
 
 console = Console(highlight=False)
 
@@ -27,15 +27,19 @@ class _LiveStatusRenderable:
         self.provider = provider
 
     def __rich_console__(self, _console, options):
+        # Never write the terminal's final column: Windows Terminal can
+        # auto-wrap it, leaving Live refreshes permanently in scrollback.
+        safe_width = max(int(options.max_width) - 1, 1)
+        with _live_status_lock:
+            preview = truncate_start(_live_output_buffer, safe_width)
         try:
-            divider, path, info = format_status_lines(
-                self.provider(), max(options.max_width, 20)
-            )
+            info = format_status_toolbar(self.provider(), safe_width)
         except Exception:
-            divider, path, info = "─" * max(options.max_width, 20), "", "status unavailable"
+            info = truncate_end("status unavailable", safe_width)
         text = Text()
-        text.append(divider + "\n", style="#875f87")
-        text.append(path + "\n", style="bright_black")
+        if preview:
+            text.append(preview)
+            text.append("\n")
         text.append(info, style="bright_black")
         yield text
 
@@ -43,6 +47,7 @@ class _LiveStatusRenderable:
 _live_status: Live | None = None
 _live_status_provider: StatusProvider | None = None
 _live_status_lock = threading.RLock()
+_live_output_buffer = ""
 
 
 def live_status_active() -> bool:
@@ -52,10 +57,11 @@ def live_status_active() -> bool:
 
 def start_live_status(provider: StatusProvider) -> bool:
     """Pin status below streaming output; return whether Live was started."""
-    global _live_status, _live_status_provider
+    global _live_output_buffer, _live_status, _live_status_provider
     with _live_status_lock:
         if _live_status is not None or not console.is_terminal:
             return False
+        _live_output_buffer = ""
         live = Live(
             _LiveStatusRenderable(provider),
             console=console,
@@ -86,10 +92,12 @@ def refresh_live_status() -> None:
 
 
 def stop_live_status() -> None:
-    """Remove the live bar and restore stdout/stderr. Safe to call repeatedly."""
-    global _live_status, _live_status_provider
+    """Remove the live bar, preserving any unfinished streamed line."""
+    global _live_output_buffer, _live_status, _live_status_provider
     with _live_status_lock:
         live = _live_status
+        pending = _live_output_buffer
+        _live_output_buffer = ""
         _live_status = None
         _live_status_provider = None
     if live is not None:
@@ -97,6 +105,29 @@ def stop_live_status() -> None:
             live.stop()
         except Exception:
             pass
+        if pending:
+            console.print(
+                pending, end="", markup=False, highlight=False, soft_wrap=True
+            )
+
+
+def _flush_live_output() -> bool:
+    """Commit the pending assistant line before another UI block is printed."""
+    global _live_output_buffer
+    with _live_status_lock:
+        live = _live_status
+        pending = _live_output_buffer
+        _live_output_buffer = ""
+    if live is None or not pending:
+        return False
+    console.print(
+        pending + "\n", end="", markup=False, highlight=False, soft_wrap=True
+    )
+    try:
+        live.refresh()
+    except Exception:
+        pass
+    return True
 
 
 @contextmanager
@@ -136,22 +167,43 @@ def print_user_prompt() -> None:
 
 
 def print_assistant_text(text: str) -> None:
-    if live_status_active():
-        # Rich Live owns the cursor; printing through its Console keeps this
-        # chunk above the pinned status bar and still streams immediately.
-        console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
-    else:
+    global _live_output_buffer
+    with _live_status_lock:
+        live = _live_status
+        if live is not None:
+            combined = _live_output_buffer + text
+            boundary = combined.rfind("\n")
+            if boundary >= 0:
+                completed = combined[: boundary + 1]
+                _live_output_buffer = combined[boundary + 1 :]
+            else:
+                completed = ""
+                _live_output_buffer = combined
+    if live is None:
         sys.stdout.write(text)
         sys.stdout.flush()
+        return
+    # Only complete lines go through Console.print. Printing every partial
+    # token with end="" makes Rich append its Live renderable to that token.
+    if completed:
+        console.print(
+            completed, end="", markup=False, highlight=False, soft_wrap=True
+        )
+    try:
+        live.refresh()
+    except Exception:
+        pass
 
 
 def print_tool_call(name: str, inp: dict) -> None:
     icon = _get_tool_icon(name)
     summary = _get_tool_summary(name, inp)
-    console.print(f"\n  [yellow]{icon} {name}[/yellow][dim] {summary}[/dim]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}  [yellow]{icon} {name}[/yellow][dim] {summary}[/dim]")
 
 
 def print_tool_result(name: str, result: str) -> None:
+    _flush_live_output()
     if (name in ("edit_file", "write_file")) and not result.startswith("Error"):
         _print_file_change_result(name, result)
         return
@@ -187,15 +239,18 @@ def _print_file_change_result(_name: str, result: str) -> None:
 
 
 def print_error(msg: str) -> None:
-    console.print(f"\n  [red]Error: {msg}[/red]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}  [red]Error: {msg}[/red]")
 
 
 def print_confirmation(command: str) -> None:
-    console.print(f"\n  [yellow]⚠ Dangerous command:[/yellow] [white]{command}[/white]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}  [yellow]⚠ Dangerous command:[/yellow] [white]{command}[/white]")
 
 
 def print_divider() -> None:
-    console.print(f"\n[dim]  {'─' * 50}[/dim]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}[dim]  {'─' * 50}[/dim]")
 
 
 # USD per million tokens. Anthropic bills prompt-cache *writes* at 1.25x the
@@ -278,11 +333,13 @@ def print_cost(
 
 
 def print_retry(attempt: int, max_retries: int, reason: str) -> None:
-    console.print(f"\n  [yellow]↻ Retry {attempt}/{max_retries}: {reason}[/yellow]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}  [yellow]↻ Retry {attempt}/{max_retries}: {reason}[/yellow]")
 
 
 def print_info(msg: str) -> None:
-    console.print(f"\n  [cyan]ℹ {msg}[/cyan]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}  [cyan]ℹ {msg}[/cyan]")
 
 
 # ─── Spinner ──────────────────────────────────────────────
@@ -334,6 +391,7 @@ def stop_spinner() -> None:
 
 
 def print_plan_for_approval(plan_content: str) -> None:
+    _flush_live_output()
     console.print("\n  [cyan]━━━ Plan for Approval ━━━[/cyan]")
     lines = plan_content.split("\n")
     max_lines = 60
@@ -345,6 +403,7 @@ def print_plan_for_approval(plan_content: str) -> None:
 
 
 def print_plan_approval_options() -> None:
+    _flush_live_output()
     console.print("  [yellow]Choose an option:[/yellow]")
     console.print("    [white]1) Yes, clear context and execute[/white][dim] — fresh start with auto-accept edits[/dim]")
     console.print("    [white]2) Yes, and execute[/white][dim] — keep context, auto-accept edits[/dim]")
@@ -356,10 +415,14 @@ def print_plan_approval_options() -> None:
 
 
 def print_sub_agent_start(agent_type: str, description: str) -> None:
-    console.print(f"\n  [magenta]┌─ Sub-agent [{agent_type}]: {description}[/magenta]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(
+        f"{prefix}  [magenta]┌─ Sub-agent [{agent_type}]: {description}[/magenta]"
+    )
 
 
 def print_sub_agent_end(agent_type: str, _description: str) -> None:
+    _flush_live_output()
     console.print(f"  [magenta]└─ Sub-agent [{agent_type}] completed[/magenta]")
 
 

@@ -6,6 +6,7 @@ from mini_claude.status import (
     format_status_lines,
     format_status_toolbar,
     format_token_limit,
+    truncate_start,
     truncate_middle,
 )
 
@@ -79,6 +80,11 @@ def test_middle_truncation_respects_wide_characters() -> None:
     assert _width(result) <= 12
     assert "…" in result
     assert result.endswith("demo")
+
+    suffix = truncate_start("很长的流式输出内容demo", 10)
+    assert _width(suffix) <= 10
+    assert suffix.startswith("…")
+    assert suffix.endswith("demo")
 
 
 def test_prompt_toolbar_is_single_line_and_keeps_required_fields() -> None:

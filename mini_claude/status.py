@@ -49,6 +49,15 @@ def truncate_end(text: str, cells: int) -> str:
     return _take_cells(text, cells - 1) + "…"
 
 
+def truncate_start(text: str, cells: int) -> str:
+    """Truncate text to a display-cell budget, preserving its latest suffix."""
+    if _display_width(text) <= cells:
+        return text
+    if cells <= 1:
+        return "…" if cells == 1 else ""
+    return "…" + _take_cells(text, cells - 1, from_end=True)
+
+
 def truncate_middle(text: str, cells: int) -> str:
     """Truncate a path-like string while keeping both useful ends visible."""
     if _display_width(text) <= cells:
@@ -143,9 +152,10 @@ def format_status_toolbar(
     PromptSession's bottom toolbar is fundamentally a one-row region. Feeding
     it embedded newlines makes completion-menu redraws wrap and repaint the
     whole screen on Windows terminals, so the idle layout is intentionally
-    compact while Rich Live keeps the detailed three-line layout during work.
+    compact and Rich Live uses the same layout during work.
     """
-    width = max(width or terminal_width(), 20)
+    requested_width = terminal_width() if width is None else width
+    width = max(int(requested_width), 1)
     used = max(int(snapshot.get("context_used") or 0), 0)
     limit = max(int(snapshot.get("context_window") or 0), 0)
     percent = (used / limit * 100) if limit else 0.0
