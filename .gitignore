@@ -9,3 +9,7 @@ __pycache__/
 .coverage
 build/
 dist/
+extensions/phm/.venv/
+extensions/phm/data/raw/
+extensions/phm/data/processed/
+extensions/phm/artifacts/

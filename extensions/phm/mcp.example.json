@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "phm": {
+      "command": "uv",
+      "args": ["run", "--project", "extensions/phm", "phm-mcp"],
+      "readOnly": true,
+      "connectTimeout": 30,
+      "toolTimeout": 60
+    }
+  }
+}
