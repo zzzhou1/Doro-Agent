@@ -110,6 +110,47 @@ def test_streaming_chunks_are_buffered_until_a_complete_line(monkeypatch) -> Non
     assert fake_console.print.call_args.kwargs["end"] == ""
 
 
+def test_cost_is_printed_after_the_pending_assistant_line(monkeypatch) -> None:
+    class FakeLive:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, refresh=False):
+            pass
+
+        def refresh(self):
+            pass
+
+        def stop(self):
+            pass
+
+    fake_console = SimpleNamespace(is_terminal=True, print=Mock())
+    ui.stop_live_status()
+    monkeypatch.setattr(ui, "console", fake_console)
+    monkeypatch.setattr(ui, "Live", FakeLive)
+
+    assert ui.start_live_status(_snapshot) is True
+    ui.print_assistant_text("第一段\n最后一段")
+    ui.print_cost(27469, 98, cache_read_tokens=27469)
+
+    calls = fake_console.print.call_args_list
+    assert calls[0].args == ("第一段\n",)
+    assert calls[1].args == ("最后一段\n",)
+    assert "Tokens: 27469 in (27469 cached) / 98 out" in calls[2].args[0]
+    ui.stop_live_status()
+
+
+def test_welcome_lists_effort_command(monkeypatch) -> None:
+    fake_console = SimpleNamespace(print=Mock())
+    monkeypatch.setattr(ui, "console", fake_console)
+
+    ui.print_welcome()
+
+    rendered = "\n".join(str(call.args[0]) for call in fake_console.print.call_args_list)
+    assert "Commands:" in rendered
+    assert "/model /effort /session" in rendered
+
+
 def test_live_status_is_disabled_for_redirected_output(monkeypatch) -> None:
     ui.stop_live_status()
     monkeypatch.setattr(ui, "console", SimpleNamespace(is_terminal=False))

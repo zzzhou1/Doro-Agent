@@ -159,7 +159,9 @@ def suspend_live_status() -> Iterator[None]:
 def print_welcome() -> None:
     console.print("\n  [bold cyan]Mini Claude[/bold cyan][dim] — A minimal coding agent[/dim]\n")
     console.print("[dim]  Type your request, or 'exit' to quit.[/dim]")
-    console.print("[dim]  Commands: /model /session /sessions /resume /clear /plan /cost /compact /memory /skills[/dim]\n")
+    console.print(
+        "[dim]  Commands: /model /effort /session /sessions /resume /clear /plan /cost /compact /memory /skills[/dim]\n"
+    )
 
 
 def print_user_prompt() -> None:
@@ -329,7 +331,8 @@ def print_cost(
     usage = format_token_usage(
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
     )
-    console.print(f"\n[dim]  {usage} (~${total:.4f})[/dim]")
+    prefix = "" if _flush_live_output() else "\n"
+    console.print(f"{prefix}[dim]  {usage} (~${total:.4f})[/dim]")
 
 
 def print_retry(attempt: int, max_retries: int, reason: str) -> None:

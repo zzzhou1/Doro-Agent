@@ -39,6 +39,7 @@ def test_slash_completion_includes_commands_and_skills() -> None:
 
     assert _completion_texts(completer, "/mo") == ["/model"]
     assert _completion_texts(completer, "/ef") == ["/effort"]
+    assert "/effort" in _completion_texts(completer, "/")
     assert "/commit" in _completion_texts(completer, "/")
     assert _completion_texts(completer, "normal input") == []
 
