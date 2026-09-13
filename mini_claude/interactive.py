@@ -17,7 +17,7 @@ from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
-from .status import format_status_lines
+from .status import format_status_toolbar
 
 
 INPUT_HISTORY_FILE = Path.home() / ".mini-claude" / "input_history"
@@ -179,16 +179,12 @@ class InlineSelector:
 def build_status_toolbar(
     status_provider: StatusProvider, width: int | None = None
 ) -> list[tuple[str, str]]:
-    """Return a three-line Prompt Toolkit toolbar from current agent state."""
+    """Return a single-row toolbar that coexists with completion menus."""
     try:
-        divider, path, info = format_status_lines(status_provider(), width)
+        info = format_status_toolbar(status_provider(), width)
     except Exception:
-        divider, path, info = "─" * max(width or 20, 20), "", "status unavailable"
-    return [
-        ("class:status.divider", divider + "\n"),
-        ("class:status.path", path + "\n"),
-        ("class:status.info", info),
-    ]
+        info = "status unavailable"
+    return [("class:status.info", info)]
 
 
 def create_repl_prompt_session(
@@ -216,8 +212,6 @@ def create_repl_prompt_session(
         style=Style.from_dict({
             "prompt": "bold ansigreen",
             "bottom-toolbar": "bg:#101010 #808080",
-            "status.divider": "#875f87",
-            "status.path": "#808080",
             "status.info": "#808080",
         }),
         input=input,

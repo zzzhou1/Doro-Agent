@@ -133,3 +133,51 @@ def format_status_lines(
 
     path = truncate_middle(str(snapshot.get("cwd") or ""), width)
     return "─" * width, path, info
+
+
+def format_status_toolbar(
+    snapshot: Mapping[str, Any], width: int | None = None
+) -> str:
+    """Build a single-line status bar safe for Prompt Toolkit completion UI.
+
+    PromptSession's bottom toolbar is fundamentally a one-row region. Feeding
+    it embedded newlines makes completion-menu redraws wrap and repaint the
+    whole screen on Windows terminals, so the idle layout is intentionally
+    compact while Rich Live keeps the detailed three-line layout during work.
+    """
+    width = max(width or terminal_width(), 20)
+    used = max(int(snapshot.get("context_used") or 0), 0)
+    limit = max(int(snapshot.get("context_window") or 0), 0)
+    percent = (used / limit * 100) if limit else 0.0
+    usage = f"{percent:.1f}%/{format_token_limit(limit)}"
+    if snapshot.get("auto_compact", True):
+        usage += " auto"
+
+    backend = str(snapshot.get("backend") or "unknown")
+    model = str(snapshot.get("model") or "unknown")
+    identity = f"{backend}:{model}" if width >= 55 else model
+
+    right_parts = [usage]
+    if width >= 115:
+        right_parts.append(f"${float(snapshot.get('cost_usd') or 0):.4f}")
+    if width >= 145 and snapshot.get("session_id"):
+        right_parts.append(str(snapshot["session_id"]))
+    right_parts.append(identity)
+    if width >= 90:
+        right_parts.append(_mode_label(snapshot))
+    right = " · ".join(right_parts)
+
+    if _display_width(right) > width:
+        model_budget = width - _display_width(usage) - 3
+        if model_budget >= 5:
+            right = usage + " · " + truncate_end(model, model_budget)
+        else:
+            right = truncate_end(usage, width)
+
+    cwd = str(snapshot.get("cwd") or "")
+    available_path = width - _display_width(right) - 3
+    if cwd and available_path >= 10:
+        path = truncate_middle(cwd, available_path)
+        padding = width - _display_width(path) - _display_width(right)
+        return path + (" " * max(padding, 1)) + right
+    return truncate_end(right, width)

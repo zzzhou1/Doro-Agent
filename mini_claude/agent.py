@@ -466,19 +466,26 @@ class Agent:
 
     # ─── Main entry point ────────────────────────────────────
 
+    async def _ensure_mcp_initialized(self) -> None:
+        """Discover MCP tools, retaining retryability after transient failures."""
+        if self._mcp_initialized or self.is_sub_agent:
+            return
+        try:
+            fully_connected = await self._mcp_manager.load_and_connect()
+            mcp_defs = self._mcp_manager.get_tool_definitions()
+            if mcp_defs:
+                known_names = {tool.get("name") for tool in self.tools}
+                self.tools.extend(
+                    tool for tool in mcp_defs if tool.get("name") not in known_names
+                )
+            self._mcp_initialized = fully_connected
+        except Exception as e:
+            self._mcp_initialized = False
+            print(f"[mcp] Init failed: {e}", flush=True)
+
     async def chat(self, user_message: str) -> None:
         self._last_user_preview = " ".join(user_message.split())[:120]
-        # Lazily connect to MCP servers on first chat (main agent only)
-        # 步骤 A：懒加载 MCP 客户端（仅主 Agent 触发）
-        if not self._mcp_initialized and not self.is_sub_agent:
-            self._mcp_initialized = True
-            try:
-                await self._mcp_manager.load_and_connect()
-                mcp_defs = self._mcp_manager.get_tool_definitions()
-                if mcp_defs:
-                    self.tools = self.tools + mcp_defs # 动态注入 MCP 工具
-            except Exception as e:
-                print(f"[mcp] Init failed: {e}", flush=True)
+        await self._ensure_mcp_initialized()
 
         self._aborted = False
         

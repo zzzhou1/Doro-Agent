@@ -700,17 +700,20 @@ class McpManager:
         self._tools: list[dict] = []
         self._connected = False
 
-    async def load_and_connect(self) -> None:
+    async def load_and_connect(self) -> bool:
         """Read config, connect to every configured server, discover tools."""
         if self._connected:
-            return
-        self._connected = True
+            return True
 
         configs = self._load_configs()
         if not configs:
-            return
+            self._connected = True
+            return True
 
+        retry_needed = False
         for name, cfg in configs.items():
+            if name in self._connections:
+                continue
             try:
                 conn = self._build_connection(name, cfg)
             except ValueError as e:
@@ -729,8 +732,15 @@ class McpManager:
                     flush=True,
                 )
             except Exception as e:
+                retry_needed = True
                 print(f"[mcp] Failed to connect to '{name}': {e}", flush=True)
                 await conn.aclose()
+
+        # Leave transient failures retryable. Invalid configurations are
+        # reported and skipped rather than retried on every user turn; already
+        # connected servers are skipped above on a subsequent attempt.
+        self._connected = not retry_needed
+        return self._connected
 
     def _build_connection(self, name: str, cfg: dict) -> _McpConnection:
         _validate_server_name(name)

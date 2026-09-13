@@ -4,6 +4,7 @@ from prompt_toolkit.utils import get_cwidth
 
 from mini_claude.status import (
     format_status_lines,
+    format_status_toolbar,
     format_token_limit,
     truncate_middle,
 )
@@ -78,6 +79,23 @@ def test_middle_truncation_respects_wide_characters() -> None:
     assert _width(result) <= 12
     assert "…" in result
     assert result.endswith("demo")
+
+
+def test_prompt_toolbar_is_single_line_and_keeps_required_fields() -> None:
+    line = format_status_toolbar(_snapshot(), width=100)
+
+    assert "\n" not in line
+    assert "2.4%/128K auto" in line
+    assert "openai:gpt-5.6-sol" in line
+    assert _width(line) == 100
+
+
+def test_prompt_toolbar_stays_single_line_when_narrow() -> None:
+    for width in (20, 32, 48, 60):
+        line = format_status_toolbar(_snapshot(), width=width)
+        assert "\n" not in line
+        assert _width(line) <= width
+        assert "2.4%/128K" in line
 
 
 def test_token_limit_units_are_compact() -> None:

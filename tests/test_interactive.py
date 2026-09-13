@@ -79,8 +79,9 @@ def test_repl_prompt_session_uses_dynamic_status_toolbar(tmp_path) -> None:
         fragments = session.bottom_toolbar()
 
     text = "".join(fragment[1] for fragment in fragments)
-    assert str(tmp_path) in text
-    assert "0.0%/128K (auto)" in text
+    assert tmp_path.name[-20:] in text
+    assert "0.0%/128K auto" in text
+    assert "\n" not in text
     assert "gpt-test" in text
     provider.assert_called_once_with()
 

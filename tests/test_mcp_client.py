@@ -247,3 +247,39 @@ def test_serverurl_is_accepted_as_an_alias_for_url(tmp_path) -> None:
     McpManager()._merge_config_file(path, target)
 
     assert target["remote"]["url"] == "https://host.test/mcp"
+
+
+@pytest.mark.asyncio
+async def test_failed_server_connection_is_retried(monkeypatch) -> None:
+    manager = McpManager()
+    attempts = 0
+
+    class FailingConnection:
+        connect_timeout = 0.1
+        read_only = False
+        transport = "stdio"
+
+        async def connect(self):
+            nonlocal attempts
+            attempts += 1
+            raise McpError("temporary failure")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(
+        manager,
+        "_load_configs",
+        lambda: {"demo": {"command": "python"}},
+    )
+    monkeypatch.setattr(
+        manager,
+        "_build_connection",
+        lambda _name, _cfg: FailingConnection(),
+    )
+
+    assert await manager.load_and_connect() is False
+    assert manager._connected is False
+    assert await manager.load_and_connect() is False
+    assert manager._connected is False
+    assert attempts == 2

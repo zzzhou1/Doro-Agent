@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -179,3 +179,37 @@ def test_auto_save_records_resumable_session_metadata() -> None:
     assert payload["metadata"]["preview"] == "hello"
     assert payload["metadata"]["schemaVersion"] == 2
     assert payload["metadata"]["updatedAt"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_initialization_retries_and_deduplicates_tools() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            api_key="test-key",
+            custom_system_prompt="test prompt",
+        )
+    agent.tools = []
+    tool = {
+        "name": "mcp__demo__lookup",
+        "description": "lookup",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    manager = SimpleNamespace(
+        load_and_connect=AsyncMock(side_effect=[False, True]),
+        get_tool_definitions=Mock(side_effect=[[], [tool]]),
+    )
+    agent._mcp_manager = manager
+
+    await agent._ensure_mcp_initialized()
+    assert agent._mcp_initialized is False
+    assert agent.tools == []
+
+    await agent._ensure_mcp_initialized()
+    assert agent._mcp_initialized is True
+    assert [item["name"] for item in agent.tools] == ["mcp__demo__lookup"]
+
+    # Once initialized, later calls are cheap and cannot duplicate definitions.
+    await agent._ensure_mcp_initialized()
+    assert manager.load_and_connect.await_count == 2
+    assert [item["name"] for item in agent.tools] == ["mcp__demo__lookup"]
