@@ -55,7 +55,8 @@ def test_switch_model_keeps_backend_and_refreshes_model_state() -> None:
     assert agent.model == "custom-model"
     assert agent.backend == "openai"
     assert agent.effective_window == 180000
-    assert agent._thinking_mode == "disabled"
+    assert agent.reasoning_effort == "high"
+    assert agent._thinking_mode == "reasoning"
     with pytest.raises(ValueError, match="empty"):
         agent.switch_model("   ")
 
@@ -86,6 +87,7 @@ async def test_anthropic_model_list_uses_bounded_request() -> None:
             backend="anthropic",
             model="claude-current",
             api_key="test-key",
+            reasoning_effort="off",
             custom_system_prompt="test prompt",
         )
     agent._anthropic_client.models.list = AsyncMock(
@@ -132,6 +134,7 @@ def test_restore_session_restores_model_id_and_history() -> None:
             "backend": "openai",
             "startTime": "2026-01-01T00:00:00Z",
             "preview": "hello",
+            "reasoningEffort": "low",
         },
         "openaiMessages": messages,
         "anthropicMessages": None,
@@ -141,6 +144,7 @@ def test_restore_session_restores_model_id_and_history() -> None:
     assert agent.model == "gpt-4o-mini"
     assert agent._openai_messages == messages
     assert agent.has_conversation_history() is True
+    assert agent.reasoning_effort == "low"
 
 
 def test_restore_session_rejects_cross_backend_history() -> None:
@@ -177,8 +181,139 @@ def test_auto_save_records_resumable_session_metadata() -> None:
     assert payload["metadata"]["backend"] == "openai"
     assert payload["metadata"]["model"] == "gpt-4o-mini"
     assert payload["metadata"]["preview"] == "hello"
-    assert payload["metadata"]["schemaVersion"] == 2
+    assert payload["metadata"]["reasoningEffort"] == "medium"
+    assert payload["metadata"]["schemaVersion"] == 3
     assert payload["metadata"]["updatedAt"]
+
+
+def test_default_effort_and_legacy_thinking_alias() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        default_agent = Agent(backend="openai", api_key="test-key")
+        thinking_agent = Agent(backend="openai", api_key="test-key", thinking=True)
+
+    assert default_agent.reasoning_effort == "medium"
+    assert default_agent._openai_reasoning_params() == {"reasoning_effort": "medium"}
+    assert thinking_agent.reasoning_effort == "high"
+
+
+def test_openai_effort_wire_mapping_and_reset() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            api_key="test-key",
+            reasoning_effort="auto",
+            default_reasoning_effort="low",
+        )
+
+    assert agent._openai_reasoning_params() == {}
+    assert agent.set_reasoning_effort("off") == "off"
+    assert agent._openai_reasoning_params() == {"reasoning_effort": "none"}
+    assert agent.reset_reasoning_effort() == "low"
+    assert agent._reasoning_effort_explicit is False
+
+
+def test_anthropic_adaptive_effort_mapping() -> None:
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+        agent = Agent(
+            backend="anthropic",
+            model="claude-opus-5",
+            api_key="test-key",
+            reasoning_effort="high",
+        )
+
+    assert agent._anthropic_reasoning_params(64000) == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high"},
+    }
+    agent.set_reasoning_effort("off")
+    assert agent._anthropic_reasoning_params(64000) == {
+        "thinking": {"type": "disabled"}
+    }
+
+
+def test_legacy_anthropic_model_keeps_fixed_thinking_budget() -> None:
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+        agent = Agent(
+            backend="anthropic",
+            model="claude-sonnet-4-20250514",
+            api_key="test-key",
+            reasoning_effort="low",
+        )
+
+    assert agent._thinking_mode == "enabled"
+    assert agent._anthropic_reasoning_params(32000) == {
+        "thinking": {
+            "type": "enabled",
+            "budget_tokens": 31999,
+        }
+    }
+
+
+def test_anthropic_rejects_known_unsupported_effort_without_downgrade() -> None:
+    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+        with pytest.raises(ValueError, match="minimal"):
+            Agent(
+                backend="anthropic",
+                model="claude-opus-5",
+                api_key="test-key",
+                reasoning_effort="minimal",
+            )
+        agent = Agent(
+            backend="anthropic",
+            model="claude-opus-5",
+            api_key="test-key",
+            reasoning_effort="high",
+        )
+
+    with pytest.raises(ValueError, match="does not support"):
+        agent.switch_model("claude-3-5-sonnet")
+    assert agent.model == "claude-opus-5"
+    assert agent.reasoning_effort == "high"
+
+
+def test_explicit_effort_beats_restored_session_effort() -> None:
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            api_key="test-key",
+            reasoning_effort="high",
+            reasoning_effort_explicit=True,
+        )
+
+    agent.restore_session({
+        "metadata": {
+            "id": "saved123",
+            "backend": "openai",
+            "reasoningEffort": "low",
+        },
+        "openaiMessages": [{"role": "system", "content": "test"}],
+    })
+
+    assert agent.reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_request_includes_reasoning_effort() -> None:
+    class EmptyStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+        agent = Agent(
+            backend="openai",
+            api_key="test-key",
+            reasoning_effort="xhigh",
+            custom_tools=[],
+        )
+    agent._openai_client.chat.completions.create = AsyncMock(return_value=EmptyStream())
+
+    await agent._call_openai_stream()
+
+    kwargs = agent._openai_client.chat.completions.create.await_args.kwargs
+    assert kwargs["reasoning_effort"] == "xhigh"
 
 
 @pytest.mark.asyncio

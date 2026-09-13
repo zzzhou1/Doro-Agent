@@ -11,10 +11,12 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from mini_claude.__main__ import (
+    parse_args,
     _load_project_env,
     _force_utf8_stdio,
     _resolve_model_selector,
     _resolve_api_config,
+    _resolve_reasoning_effort,
     _resolve_session_selector,
     _restore_agent_session,
     run_repl,
@@ -239,6 +241,82 @@ def test_model_selector_accepts_list_number_or_exact_name() -> None:
         _resolve_model_selector("4", models)
     with pytest.raises(ValueError, match="not in the returned list"):
         _resolve_model_selector("missing", models)
+
+
+def _effort_args(effort: str | None = None, thinking: bool = False) -> Namespace:
+    return Namespace(effort=effort, thinking=thinking)
+
+
+def test_effort_cli_and_environment_precedence() -> None:
+    env = {
+        "OPENAI_REASONING_EFFORT": "low",
+        "MINI_CLAUDE_EFFORT": "high",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        assert _resolve_reasoning_effort(_effort_args("xhigh"), "openai") == (
+            "xhigh", "--effort", "low", True
+        )
+        assert _resolve_reasoning_effort(_effort_args(), "openai") == (
+            "low", "OPENAI_REASONING_EFFORT", "low", False
+        )
+    with patch.dict(os.environ, {"MINI_CLAUDE_EFFORT": "off"}, clear=True):
+        assert _resolve_reasoning_effort(_effort_args(), "anthropic") == (
+            "off", "MINI_CLAUDE_EFFORT", "off", False
+        )
+    with patch.dict(os.environ, {}, clear=True):
+        assert _resolve_reasoning_effort(_effort_args(thinking=True), "openai") == (
+            "high", "--thinking", "medium", True
+        )
+        assert _resolve_reasoning_effort(_effort_args(), "openai") == (
+            "medium", "built-in default", "medium", False
+        )
+
+
+def test_effort_parser_rejects_legacy_flag_combined_with_level() -> None:
+    with patch.object(sys, "argv", ["mini-claude", "--effort", "low"]):
+        assert parse_args().effort == "low"
+    with (
+        patch.object(sys, "argv", ["mini-claude", "--effort", "low", "--thinking"]),
+        pytest.raises(SystemExit),
+    ):
+        parse_args()
+
+
+@pytest.mark.asyncio
+async def test_repl_effort_selector_changes_level() -> None:
+    agent = Mock()
+    agent.backend = "openai"
+    agent.reasoning_effort = "medium"
+    agent.default_reasoning_effort = "medium"
+    agent._aborted = False
+    agent._output_buffer = None
+    agent.available_reasoning_efforts.return_value = ["auto", "medium", "high"]
+    prompt_session = Mock()
+    prompt_session.prompt_async = AsyncMock(side_effect=["/effort", "exit"])
+
+    with (
+        patch("mini_claude.__main__.signal.signal"),
+        patch("mini_claude.__main__.print_welcome"),
+        patch("mini_claude.__main__.print_info"),
+        patch("mini_claude.__main__.prompt_choice", new=AsyncMock(return_value="high")),
+    ):
+        await run_repl(agent, prompt_session=prompt_session)
+
+    agent.set_reasoning_effort.assert_called_once_with("high")
+
+
+@pytest.mark.asyncio
+async def test_repl_effort_default_resets_configuration() -> None:
+    agent = Mock()
+    agent._aborted = False
+    agent._output_buffer = None
+    prompt_session = Mock()
+    prompt_session.prompt_async = AsyncMock(side_effect=["/effort default", "exit"])
+
+    with patch("mini_claude.__main__.signal.signal"), patch("mini_claude.__main__.print_welcome"):
+        await run_repl(agent, prompt_session=prompt_session)
+
+    agent.reset_reasoning_effort.assert_called_once_with()
 
 
 @pytest.mark.asyncio

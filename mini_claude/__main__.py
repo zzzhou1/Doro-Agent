@@ -26,6 +26,13 @@ from .session import load_session, get_latest_session_id, list_sessions
 from .memory import list_memories
 from .skills import discover_skills, resolve_skill_prompt, get_skill_by_name, execute_skill
 from .interactive import create_repl_prompt_session, prompt_choice
+from .reasoning import (
+    BACKEND_REASONING_ENV,
+    DEFAULT_REASONING_EFFORT,
+    REASONING_EFFORTS,
+    normalize_reasoning_effort,
+)
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +46,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan", action="store_true", help="Plan mode: read-only")
     parser.add_argument("--accept-edits", action="store_true", help="Auto-approve file edits")
     parser.add_argument("--dont-ask", action="store_true", help="Auto-deny confirmations (for CI)")
-    parser.add_argument("--thinking", action="store_true", help="Enable extended thinking")
+    reasoning = parser.add_mutually_exclusive_group()
+    reasoning.add_argument(
+        "--effort",
+        choices=REASONING_EFFORTS,
+        default=None,
+        help="Reasoning effort (default: medium)",
+    )
+    reasoning.add_argument("--thinking", action="store_true", help="Alias for --effort high")
     parser.add_argument("--model", "-m", default=None, help="Model to use")
     parser.add_argument("--api-base", default=None, help="OpenAI-compatible API base URL")
     parser.add_argument("--env-file", default=None, metavar="PATH", help="Load env vars from PATH instead of searching")
@@ -144,6 +158,31 @@ def _resolve_model(args: argparse.Namespace, backend: str) -> tuple[str, str]:
     if backend_env:
         return backend_env, backend_env_name
     return default_model_for(backend), f"default for {backend}"
+
+
+def _configured_reasoning_effort(backend: str) -> tuple[str, str]:
+    """Resolve the reusable default below session and explicit CLI choices."""
+    backend_env_name = BACKEND_REASONING_ENV[backend]
+    backend_env = os.environ.get(backend_env_name, "").strip()
+    global_env = os.environ.get("MINI_CLAUDE_EFFORT", "").strip()
+    if backend_env:
+        return normalize_reasoning_effort(backend_env), backend_env_name
+    if global_env:
+        return normalize_reasoning_effort(global_env), "MINI_CLAUDE_EFFORT"
+    return DEFAULT_REASONING_EFFORT, "built-in default"
+
+
+def _resolve_reasoning_effort(
+    args: argparse.Namespace,
+    backend: str,
+) -> tuple[str, str, str, bool]:
+    """Return initial effort, source, reset default, and CLI-explicit flag."""
+    configured_default, default_source = _configured_reasoning_effort(backend)
+    if args.effort:
+        return normalize_reasoning_effort(args.effort), "--effort", configured_default, True
+    if args.thinking:
+        return "high", "--thinking", configured_default, True
+    return configured_default, default_source, configured_default, False
 
 
 async def run_repl(agent: Agent, prompt_session=None) -> None:
@@ -286,6 +325,43 @@ async def run_repl(agent: Agent, prompt_session=None) -> None:
                     f"Model switched: {old_model} → {new_model} "
                     f"(backend remains {agent.backend})"
                 )
+            except ValueError as e:
+                print_error(str(e))
+            continue
+        if inp == "/effort":
+            efforts = agent.available_reasoning_efforts()
+            selector = await prompt_choice(
+                f"Reasoning effort for {agent.backend}:",
+                [
+                    (
+                        effort,
+                        effort
+                        + (" ← current" if effort == agent.reasoning_effort else "")
+                        + (
+                            " (default)"
+                            if effort == agent.default_reasoning_effort
+                            else ""
+                        ),
+                    )
+                    for effort in efforts
+                ],
+                initial_value=agent.reasoning_effort,
+            )
+            if selector:
+                try:
+                    agent.set_reasoning_effort(selector)
+                    print_info(f"Reasoning effort: {agent.reasoning_effort}")
+                except ValueError as e:
+                    print_error(str(e))
+            continue
+        if inp.startswith("/effort "):
+            requested = inp[len("/effort "):].strip()
+            try:
+                if requested.lower() == "default":
+                    agent.reset_reasoning_effort()
+                else:
+                    agent.set_reasoning_effort(requested)
+                print_info(f"Reasoning effort: {agent.reasoning_effort}")
             except ValueError as e:
                 print_error(str(e))
             continue
@@ -497,7 +573,9 @@ Options:
   --plan              Plan mode: read-only, describe changes without executing
   --accept-edits      Auto-approve file edits, still confirm dangerous shell
   --dont-ask          Auto-deny anything needing confirmation (for CI)
-  --thinking          Enable extended thinking (Anthropic only)
+  --effort LEVEL      Reasoning effort: auto/off/minimal/low/medium/high/xhigh/max
+                      (default: medium; provider/model support varies)
+  --thinking          Backward-compatible alias for --effort high
   --model, -m         Model to use (default per backend: anthropic=claude-opus-5,
                       openai=gpt-5.6-sol; override with MINI_CLAUDE_MODEL for all
                       backends, or ANTHROPIC_MODEL / OPENAI_MODEL for one)
@@ -514,6 +592,8 @@ REPL commands:
   /cost               Show token usage and cost
   /model              List models and select one interactively
   /model NAME         Switch model within the current backend
+  /effort             Select reasoning effort interactively
+  /effort LEVEL       Change effort; use "default" to reset configuration
   /session            Select and resume a saved session
   /sessions           List sessions for this project and backend
   /resume [N|ID]      Select and resume a saved session
@@ -527,7 +607,7 @@ Examples:
   mini-claude --yolo "run all tests and fix failures"
   mini-claude --plan "how would you refactor this?"
   mini-claude --max-cost 0.50 --max-turns 20 "implement feature X"
-  OPENAI_API_KEY=sk-xxx mini-claude --api-base https://aihubmix.com/v1 --model gpt-4o "hello"
+  OPENAI_API_KEY=sk-xxx mini-claude --api-base https://aihubmix.com/v1 --model gpt-5.6-sol "hello"
   mini-claude --resume
   mini-claude  # starts interactive REPL
 """)
@@ -536,6 +616,13 @@ Examples:
     permission_mode = _resolve_permission_mode(args)
     resolved_backend, resolved_api_key, resolved_api_base = _resolve_api_config(args)
     model, model_source = _resolve_model(args, resolved_backend)
+    try:
+        effort, effort_source, default_effort, effort_explicit = (
+            _resolve_reasoning_effort(args, resolved_backend)
+        )
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(2)
 
     if not resolved_api_key:
         searched = "\n".join(f"    {path}" for path in _dotenv_candidates(args.env_file))
@@ -548,18 +635,27 @@ Examples:
         )
         sys.exit(1)
 
-    agent = Agent(
-        permission_mode=permission_mode,
-        model=model,
-        backend=resolved_backend,
-        thinking=args.thinking,
-        max_cost_usd=args.max_cost,
-        max_turns=args.max_turns,
-        api_base=resolved_api_base if resolved_backend == "openai" else None,
-        anthropic_base_url=resolved_api_base if resolved_backend == "anthropic" else None,
-        api_key=resolved_api_key,
+    try:
+        agent = Agent(
+            permission_mode=permission_mode,
+            model=model,
+            backend=resolved_backend,
+            reasoning_effort=effort,
+            default_reasoning_effort=default_effort,
+            reasoning_effort_explicit=effort_explicit,
+            max_cost_usd=args.max_cost,
+            max_turns=args.max_turns,
+            api_base=resolved_api_base if resolved_backend == "openai" else None,
+            anthropic_base_url=resolved_api_base if resolved_backend == "anthropic" else None,
+            api_key=resolved_api_key,
+        )
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(2)
+    print_info(
+        f"Backend: {agent.backend} | model: {agent.model} ({model_source}) | "
+        f"effort: {agent.reasoning_effort} ({effort_source})"
     )
-    print_info(f"Backend: {agent.backend} | model: {agent.model} ({model_source})")
 
     # Resume session
     if args.resume:

@@ -23,6 +23,7 @@ def _snapshot(**overrides):
         "model": "gpt-5.6-sol",
         "permission_mode": "default",
         "thinking_mode": "disabled",
+        "reasoning_effort": "medium",
         "processing": False,
     }
     value.update(overrides)
@@ -41,7 +42,7 @@ def test_wide_status_matches_expected_information_hierarchy() -> None:
     assert "2.4%/128K (auto)" in info
     assert "$0.0132" in info
     assert "ab12cd34" in info
-    assert "(openai) gpt-5.6-sol • normal" in info
+    assert "(openai) gpt-5.6-sol • normal · think:medium" in info
     assert _width(info) == 120
 
 
@@ -54,14 +55,15 @@ def test_processing_and_plan_modes_are_visible() -> None:
     _divider, _path, plan = format_status_lines(
         _snapshot(permission_mode="plan"), width=100
     )
-    assert plan.endswith("• plan")
+    assert "• plan" in plan
+    assert plan.endswith("think:medium")
 
 
-def test_thinking_mode_is_visible_when_idle() -> None:
+def test_reasoning_effort_is_visible_when_idle() -> None:
     _divider, _path, info = format_status_lines(
-        _snapshot(thinking_mode="adaptive"), width=110
+        _snapshot(reasoning_effort="high"), width=110
     )
-    assert "normal · thinking:adaptive" in info
+    assert "normal · think:high" in info
 
 
 def test_narrow_status_never_exceeds_terminal_width() -> None:

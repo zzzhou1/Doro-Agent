@@ -90,7 +90,8 @@ OpenAI 示例：
 ```dotenv
 OPENAI_API_KEY=your-key
 OPENAI_BASE_URL=https://your-provider.example/v1
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_REASONING_EFFORT=medium
 ```
 
 Anthropic 示例：
@@ -99,9 +100,12 @@ Anthropic 示例：
 ANTHROPIC_API_KEY=your-key
 ANTHROPIC_BASE_URL=
 ANTHROPIC_MODEL=claude-opus-5
+ANTHROPIC_EFFORT=medium
 ```
 
 **模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型，优先用按后端的 `ANTHROPIC_MODEL` / `OPENAI_MODEL`；**`MINI_CLAUDE_MODEL` 对全部后端生效**，会把一个服务商的模型名带到另一个上，只在确认只跑单一后端时才用。
+
+**思考强度也可以不写。** 内置默认是 `medium`，可选 `auto`、`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。各模型支持范围不同：Anthropic 不支持 `minimal`；已知不支持的组合会在本地报错，其余由实际 API 端点校验，不会静默降级。
 
 `.env` 已被 Git 忽略。
 
@@ -130,7 +134,7 @@ OpenAI 官方接口：
 
 ```powershell
 $env:OPENAI_API_KEY = "your-key"
-mini-claude --model gpt-4o "hello"
+mini-claude --model gpt-5.6-sol "hello"
 ```
 
 OpenAI-compatible 接口：
@@ -145,8 +149,10 @@ mini-claude --model your-model "hello"
 
 模型解析优先级：`--model` > `MINI_CLAUDE_MODEL`（所有后端）> `ANTHROPIC_MODEL` / `OPENAI_MODEL`（仅该后端）> 该后端的内置默认。启动时首行会打印实际生效的后端与模型，例如：
 
+思考强度解析优先级：REPL `/effort` > 显式 `--effort` / `--thinking` > 恢复会话中保存的值 > `OPENAI_REASONING_EFFORT` / `ANTHROPIC_EFFORT` > `MINI_CLAUDE_EFFORT` > 内置 `medium`。`/effort default` 可重置到环境变量或内置默认。
+
 ```text
-ℹ Backend: openai | model: gpt-5.6-sol (default for openai)
+ℹ Backend: openai | model: gpt-5.6-sol (default for openai) | effort: medium (built-in default)
 ```
 
 ## 常用参数
@@ -156,7 +162,8 @@ mini-claude --model your-model "hello"
 --plan              只读计划模式
 --accept-edits      自动批准文件编辑
 --dont-ask          自动拒绝需要确认的操作
---thinking          启用 Anthropic 扩展思考
+--effort LEVEL      设置思考强度（默认 medium）
+--thinking          向后兼容别名，等同于 --effort high
 --model, -m NAME    指定模型（不写则用该后端的内置默认）
 --env-file PATH     指定 .env 文件，跳过自动查找
 --resume            恢复最近会话
@@ -169,6 +176,9 @@ mini-claude --model your-model "hello"
 ```text
 /model                 从当前 API 获取模型列表，并按序号或名称选择
 /model <模型名>        在当前后端内切换模型，并保留本次对话历史
+/effort                使用方向键选择思考强度
+/effort <LEVEL>        立即切换当前会话的思考强度
+/effort default        恢复环境变量或内置默认强度
 /session               使用方向键选择并恢复会话（等同于 /resume）
 /sessions              列出当前项目、当前后端的历史会话
 /resume                使用方向键选择并恢复会话

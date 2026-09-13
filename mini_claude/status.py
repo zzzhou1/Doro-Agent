@@ -89,11 +89,11 @@ def _mode_label(snapshot: Mapping[str, Any]) -> str:
 
     permission_mode = str(snapshot.get("permission_mode") or "default")
     mode = "plan" if permission_mode == "plan" else "normal"
-    thinking = str(snapshot.get("thinking_mode") or "disabled")
-    if thinking != "disabled":
-        mode += f" · thinking:{thinking}"
-    elif permission_mode not in ("default", "plan"):
+    if permission_mode not in ("default", "plan"):
         mode += f" · {permission_mode}"
+    effort = snapshot.get("reasoning_effort")
+    if effort:
+        mode += f" · think:{effort}"
     return mode
 
 

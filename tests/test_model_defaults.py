@@ -132,5 +132,6 @@ def test_status_snapshot_contains_display_state_but_no_credentials() -> None:
     assert snapshot["model"] == "gpt-5.6-sol"
     assert snapshot["context_window"] == 128000
     assert snapshot["session_id"] == agent.session_id
+    assert snapshot["reasoning_effort"] == "medium"
     assert "api_key" not in snapshot
     assert "api_base" not in snapshot

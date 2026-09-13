@@ -51,6 +51,12 @@ from .session import save_session
 from .prompt import build_system_prompt
 from .subagent import get_sub_agent_config
 from .mcp_client import McpManager
+from .reasoning import (
+    DEFAULT_REASONING_EFFORT,
+    REASONING_EFFORTS,
+    normalize_reasoning_effort,
+)
+
 
 # ─── Retry with exponential backoff ──────────────────────────
 
@@ -202,6 +208,12 @@ def _model_supports_thinking(model: str) -> bool:
     return False
 
 
+def _model_known_not_to_support_thinking(model: str) -> bool:
+    """Recognize legacy Claude IDs without rejecting private gateway aliases."""
+    m = model.lower()
+    return "claude" in m and any(x in m for x in ("claude-3-", "3-5-", "3-7-"))
+
+
 def _model_supports_adaptive_thinking(model: str) -> bool:
     """Adaptive thinking shipped with the 4-6 generation; later Opus/Sonnet
     releases inherit it. Unverified against the live endpoint — if a gateway
@@ -261,7 +273,10 @@ class Agent:
         api_base: str | None = None,
         anthropic_base_url: str | None = None,
         api_key: str | None = None,
-        thinking: bool = False,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
+        default_reasoning_effort: str | None = None,
+        reasoning_effort_explicit: bool = False,
         max_cost_usd: float | None = None,
         max_turns: int | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
@@ -273,12 +288,20 @@ class Agent:
             raise ValueError("backend must be 'anthropic' or 'openai'")
 
         self.permission_mode = permission_mode
-        self.thinking = thinking
         self.backend = backend or ("openai" if api_base else "anthropic")
         self.use_openai = self.backend == "openai"
         # The backend is resolved first so an omitted model can pick up that
         # backend's own default instead of one shared hardcoded name.
         self.model = resolve_default_model(self.backend, model)
+        self.default_reasoning_effort = normalize_reasoning_effort(
+            default_reasoning_effort or DEFAULT_REASONING_EFFORT
+        )
+        selected_effort = reasoning_effort or self.default_reasoning_effort
+        if thinking:
+            selected_effort = "high"
+        self.reasoning_effort = normalize_reasoning_effort(selected_effort)
+        self._reasoning_effort_explicit = reasoning_effort_explicit or bool(thinking)
+        self.thinking = self.reasoning_effort not in ("auto", "off")
         self.api_base = api_base
         self.anthropic_base_url = anthropic_base_url
         self.api_key = api_key
@@ -318,6 +341,7 @@ class Agent:
         self._context_cleared: bool = False  # Set when plan approval clears context
 
         # Thinking mode
+        self._validate_reasoning_effort(self.reasoning_effort)
         self._thinking_mode = self._resolve_thinking_mode()
 
         # Output buffer (sub-agents capture output)
@@ -360,14 +384,82 @@ class Agent:
             self._anthropic_client = anthropic.AsyncAnthropic(**kwargs)
             self._openai_client = None
 
+    def _validate_reasoning_effort(self, effort: str, model: str | None = None) -> None:
+        """Reject combinations known to be unsupported without downgrading."""
+        if self.use_openai:
+            # OpenAI-compatible gateways expose many private model IDs. Pass a
+            # canonical value through and let that endpoint reject unsupported
+            # levels instead of guessing from the model name.
+            return
+        if effort == "minimal":
+            raise ValueError("Anthropic does not support the 'minimal' effort level.")
+        target_model = model or self.model
+        if (
+            effort not in ("auto", "off")
+            and _model_known_not_to_support_thinking(target_model)
+        ):
+            raise ValueError(
+                f"Model {target_model!r} does not support configurable thinking. "
+                "Use effort 'auto' or 'off'."
+            )
+
     def _resolve_thinking_mode(self) -> str:
-        if not self.thinking:
+        if self.reasoning_effort == "auto":
+            return "auto"
+        if self.reasoning_effort == "off":
             return "disabled"
-        if not _model_supports_thinking(self.model):
-            return "disabled"
+        if self.use_openai:
+            return "reasoning"
         if _model_supports_adaptive_thinking(self.model):
             return "adaptive"
         return "enabled"
+
+    def available_reasoning_efforts(self) -> list[str]:
+        if self.use_openai:
+            return list(REASONING_EFFORTS)
+        return [effort for effort in REASONING_EFFORTS if effort != "minimal"]
+
+    def set_reasoning_effort(self, effort: str, *, explicit: bool = True) -> str:
+        normalized = normalize_reasoning_effort(effort)
+        self._validate_reasoning_effort(normalized)
+        self.reasoning_effort = normalized
+        self._reasoning_effort_explicit = explicit
+        self.thinking = normalized not in ("auto", "off")
+        self._thinking_mode = self._resolve_thinking_mode()
+        return normalized
+
+    def reset_reasoning_effort(self) -> str:
+        return self.set_reasoning_effort(
+            self.default_reasoning_effort,
+            explicit=False,
+        )
+
+    def _openai_reasoning_params(self) -> dict[str, str]:
+        if self.reasoning_effort == "auto":
+            return {}
+        wire_effort = "none" if self.reasoning_effort == "off" else self.reasoning_effort
+        return {"reasoning_effort": wire_effort}
+
+    def _anthropic_reasoning_params(self, max_output: int) -> dict[str, Any]:
+        if self.reasoning_effort == "auto":
+            return {}
+        if self.reasoning_effort == "off":
+            if _model_supports_adaptive_thinking(self.model):
+                return {"thinking": {"type": "disabled"}}
+            return {}
+        if self._thinking_mode == "adaptive":
+            return {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": self.reasoning_effort},
+            }
+        # Legacy extended-thinking models only expose a token budget. Keep the
+        # existing fixed-budget behavior in this first effort-aware version.
+        return {
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": max_output - 1,
+            }
+        }
 
     @property
     def is_processing(self) -> bool:
@@ -454,6 +546,7 @@ class Agent:
             "model": self.model,
             "permission_mode": self.permission_mode,
             "thinking_mode": self._thinking_mode,
+            "reasoning_effort": self.reasoning_effort,
             "processing": self.is_processing,
         }
 
@@ -548,10 +641,11 @@ class Agent:
         print_info("Conversation cleared.")
 
     def switch_model(self, model: str) -> str:
-        """Switch models without changing the configured API backend."""
+        """Switch models without changing the backend or silently downgrading effort."""
         model = model.strip()
         if not model:
             raise ValueError("Model name cannot be empty")
+        self._validate_reasoning_effort(self.reasoning_effort, model=model)
         self.model = model
         self.context_window = _get_context_window(model)
         self.effective_window = self.context_window - 20000
@@ -637,9 +731,21 @@ class Agent:
         if not isinstance(messages, list):
             raise ValueError(f"Session has no {self.backend} conversation history")
 
+        previous_effort = self.reasoning_effort
+        previous_explicit = self._reasoning_effort_explicit
+        stored_effort = metadata.get("reasoningEffort")
+        if stored_effort and not self._reasoning_effort_explicit:
+            self.set_reasoning_effort(str(stored_effort), explicit=False)
         stored_model = metadata.get("model")
-        if stored_model:
-            self.switch_model(str(stored_model))
+        try:
+            if stored_model:
+                self.switch_model(str(stored_model))
+        except Exception:
+            self.reasoning_effort = previous_effort
+            self._reasoning_effort_explicit = previous_explicit
+            self.thinking = previous_effort not in ("auto", "off")
+            self._thinking_mode = self._resolve_thinking_mode()
+            raise
         stored_id = metadata.get("id")
         if stored_id:
             self.session_id = str(stored_id)
@@ -673,12 +779,13 @@ class Agent:
                     "id": self.session_id,
                     "model": self.model,
                     "backend": self.backend,
+                    "reasoningEffort": self.reasoning_effort,
                     "cwd": str(Path.cwd()),
                     "startTime": self.session_start_time,
                     "updatedAt": now,
                     "messageCount": self._get_message_count(),
                     "preview": self._last_user_preview,
-                    "schemaVersion": 2,
+                    "schemaVersion": 3,
                 },
                 "anthropicMessages": self._anthropic_messages if not self.use_openai else None,
                 "openaiMessages": self._openai_messages if self.use_openai else None,
@@ -967,6 +1074,8 @@ class Agent:
                 api_base=self.api_base,
                 anthropic_base_url=self.anthropic_base_url,
                 api_key=self.api_key,
+                reasoning_effort=self.reasoning_effort,
+                default_reasoning_effort=self.default_reasoning_effort,
                 custom_system_prompt=result["prompt"],
                 custom_tools=tools,
                 is_sub_agent=True,
@@ -1118,6 +1227,8 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             api_base=self.api_base,
             anthropic_base_url=self.anthropic_base_url,
             api_key=self.api_key,
+            reasoning_effort=self.reasoning_effort,
+            default_reasoning_effort=self.default_reasoning_effort,
             custom_system_prompt=config["system_prompt"],
             custom_tools=config["tools"],
             is_sub_agent=True,
@@ -1303,14 +1414,12 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             max_output = _get_max_output_tokens(self.model)
             create_params: dict[str, Any] = {
                 "model": self.model,
-                "max_tokens": max_output if self._thinking_mode != "disabled" else 16384,
+                "max_tokens": max_output if self._thinking_mode in ("adaptive", "enabled") else 16384,
                 "system": self._system_prompt,
                 "tools": get_active_tool_definitions(self.tools),
                 "messages": self._anthropic_messages,
             }
-
-            if self._thinking_mode in ("adaptive", "enabled"):
-                create_params["thinking"] = {"type": "enabled", "budget_tokens": max_output - 1}
+            create_params.update(self._anthropic_reasoning_params(max_output))
 
             first_text = True
             # Track in-flight tool_use blocks by index for streaming execution
@@ -1527,13 +1636,15 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
 
     async def _call_openai_stream(self) -> dict:
         async def _do():
-            stream = await self._openai_client.chat.completions.create(
-                model=self.model,
-                tools=_to_openai_tools(get_active_tool_definitions(self.tools)),
-                messages=self._openai_messages,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            create_params: dict[str, Any] = {
+                "model": self.model,
+                "tools": _to_openai_tools(get_active_tool_definitions(self.tools)),
+                "messages": self._openai_messages,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+            create_params.update(self._openai_reasoning_params())
+            stream = await self._openai_client.chat.completions.create(**create_params)
 
             content = ""
             first_text = True

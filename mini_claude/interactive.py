@@ -27,6 +27,7 @@ BUILTIN_COMMANDS = {
     "/clear": "Clear conversation history",
     "/compact": "Compact the current context",
     "/cost": "Show token usage and estimated cost",
+    "/effort": "Select or change reasoning effort",
     "/memory": "List project memories",
     "/model": "List or switch models",
     "/plan": "Toggle plan mode",
