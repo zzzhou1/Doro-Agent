@@ -319,7 +319,9 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
     "transport": "auto" } } }
 ```
 
-可选调优：`connectTimeout`（默认 15s，覆盖 connect / initialize / tools-list）、`toolTimeout`（默认 60s，单次 tools/call 的上限，超时不会拖死 agent）、`readOnly`（声明该 server 只读，其工具才允许与其他工具并行执行）、`minInterval` / `maxQps`（限制同一 server 的调用频率，见下）。
+可选调优：`connectTimeout`（默认 15s，覆盖 connect / initialize / tools-list）、`toolTimeout`（默认 60s，单次 tools/call 的上限，超时不会拖死 agent）、`readOnly`（声明该 server 只读，其工具才允许与其他工具并行执行）、`cwd`（stdio 子进程工作目录，相对值按配置所属项目解析）、`minInterval` / `maxQps`（限制同一 server 的调用频率，见下）。
+
+依赖仓库内相对路径的 stdio 服务应显式配置 `"cwd": "."`。例如根目录 `.mcp.json` 中的 `args` 使用 `extensions/phm` 时，这能保证从其他目录启动 `mini-claude` 仍以仓库根目录解析路径。可共享配置不要写死本机盘符和绝对路径。
 
 > **上游限流**：不少托管服务按 API key 限流（高德是 3 QPS）。并行调用的协议层面没问题，但会被上游拒绝。给这类 server 配上 `"maxQps": 3`（或等价的 `"minInterval": 0.34`），客户端会在**每次调用开始之间**留出间隔 —— 既守住限流窗口，又不影响请求本身的并发重叠。不配则完全不限速。
 

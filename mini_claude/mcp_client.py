@@ -25,6 +25,7 @@ older HTTP+SSE transport (2024-11-05):
 Per-server tuning (optional, both transports):
   "connectTimeout": 15     seconds for connect + initialize + tools/list
   "toolTimeout":    60     seconds for a single tools/call
+  "cwd":            "."    stdio working directory; relative to config project
   "readOnly":       true   mark the server's tools as parallel-safe
 
 Each MCP tool is exposed to the model as "mcp__serverName__toolName".
@@ -81,6 +82,7 @@ def config_search_paths(cwd: Path | None = None) -> list[Path]:
             seen.add(key)
             unique.append(path)
     return unique
+
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_INFO = {"name": "mini-claude", "version": "1.0.0"}
@@ -184,9 +186,7 @@ def _require_httpx():
     try:
         import httpx
     except ImportError as exc:  # pragma: no cover - httpx ships with the SDKs
-        raise McpError(
-            "HTTP/SSE MCP servers need the 'httpx' package (pip install httpx)"
-        ) from exc
+        raise McpError("HTTP/SSE MCP servers need the 'httpx' package (pip install httpx)") from exc
     return httpx
 
 
@@ -252,11 +252,14 @@ class _McpConnection:
 
     async def initialize(self) -> dict:
         """Perform the MCP initialize handshake."""
-        result = await self._request("initialize", {
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": dict(CLIENT_INFO),
-        })
+        result = await self._request(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": dict(CLIENT_INFO),
+            },
+        )
         await self._notify("notifications/initialized")
         return result if isinstance(result, dict) else {}
 
@@ -334,6 +337,7 @@ class McpConnection(_McpConnection):
         command: str,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | os.PathLike[str] | None = None,
         **kwargs: Any,
     ):
         super().__init__(server_name, **kwargs)
@@ -342,6 +346,7 @@ class McpConnection(_McpConnection):
         self.env = dict(env or {})
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
+        self.cwd = os.fspath(cwd) if cwd is not None else None
 
     async def connect(self) -> None:
         merged_env = {**os.environ, **self.env}
@@ -351,11 +356,13 @@ class McpConnection(_McpConnection):
             # taking this process down with it.
             kwargs["start_new_session"] = True
         self._process = await asyncio.create_subprocess_exec(
-            self.command, *self.args,
+            self.command,
+            *self.args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=merged_env,
+            cwd=self.cwd,
             **kwargs,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
@@ -553,7 +560,10 @@ class HttpMcpConnection(_McpConnection):
         payload = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}}
 
         async with self._client.stream(
-            "POST", self.url, json=payload, headers=self._http_headers(body=True),
+            "POST",
+            self.url,
+            json=payload,
+            headers=self._http_headers(body=True),
         ) as response:
             self._capture_session(response)
             if response.status_code >= 400:
@@ -590,7 +600,9 @@ class HttpMcpConnection(_McpConnection):
         payload = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}}
         try:
             response = await self._client.post(
-                self._post_url, json=payload, headers=self._http_headers(body=True),
+                self._post_url,
+                json=payload,
+                headers=self._http_headers(body=True),
             )
             if response.status_code >= 400:
                 raise _HttpStatusError(
@@ -613,7 +625,9 @@ class HttpMcpConnection(_McpConnection):
         url = self._post_url or self.url
         try:
             response = await self._client.post(
-                url, json=payload, headers=self._http_headers(body=True),
+                url,
+                json=payload,
+                headers=self._http_headers(body=True),
             )
             self._capture_session(response)
         except Exception:
@@ -625,7 +639,8 @@ class HttpMcpConnection(_McpConnection):
         self.transport = "sse"
         self._endpoint_ready = asyncio.Event()
         cm = self._client.stream(
-            "GET", self.url,
+            "GET",
+            self.url,
             headers=self._http_headers(body=False, accept="text/event-stream"),
         )
         self._response = await cm.__aenter__()
@@ -634,7 +649,8 @@ class HttpMcpConnection(_McpConnection):
 
         try:
             await asyncio.wait_for(
-                self._endpoint_ready.wait(), timeout=self.connect_timeout,
+                self._endpoint_ready.wait(),
+                timeout=self.connect_timeout,
             )
         except TimeoutError as exc:
             await self._teardown_stream()
@@ -689,8 +705,7 @@ class HttpMcpConnection(_McpConnection):
             if self._endpoint_ready is not None:
                 self._endpoint_ready.set()
             self._fail_pending(
-                self._stream_error
-                or McpError(f"SSE stream from '{self.server_name}' closed")
+                self._stream_error or McpError(f"SSE stream from '{self.server_name}' closed")
             )
 
     # ── teardown ──
@@ -823,18 +838,13 @@ class McpManager:
             to_attempt.append((name, cfg))
 
         if to_attempt:
-            await asyncio.gather(
-                *(self._connect_one(name, cfg) for name, cfg in to_attempt)
-            )
+            await asyncio.gather(*(self._connect_one(name, cfg) for name, cfg in to_attempt))
 
         # "Done" means every configured server reached a terminal state:
         # connected, or skipped for a permanently invalid config.
         self._connected = all(
             name in self._connections
-            or (
-                (state := self._states.get(name)) is not None
-                and state.status == "skipped"
-            )
+            or ((state := self._states.get(name)) is not None and state.status == "skipped")
             for name in configs
         )
         return self._connected
@@ -859,7 +869,9 @@ class McpManager:
             try:
                 await conn.connect()
                 await asyncio.wait_for(conn.initialize(), timeout=conn.connect_timeout)
-                server_tools = await asyncio.wait_for(conn.list_tools(), timeout=conn.connect_timeout)
+                server_tools = await asyncio.wait_for(
+                    conn.list_tools(), timeout=conn.connect_timeout
+                )
             except Exception as e:
                 await conn.aclose()
                 self._record_failure(state, e)
@@ -936,29 +948,31 @@ class McpManager:
             state = self._states.get(name)
             conn = self._connections.get(name)
             if state is None:
-                out.append({
-                    "name": name,
-                    "status": "connected" if conn else "pending",
-                    "transport": getattr(conn, "transport", None),
-                    "tool_count": 0,
-                    "error": None,
-                    "attempts": 0,
-                    "retry_in": 0.0,
-                })
+                out.append(
+                    {
+                        "name": name,
+                        "status": "connected" if conn else "pending",
+                        "transport": getattr(conn, "transport", None),
+                        "tool_count": 0,
+                        "error": None,
+                        "attempts": 0,
+                        "retry_in": 0.0,
+                    }
+                )
                 continue
-            out.append({
-                "name": name,
-                "status": state.status,
-                "transport": state.transport,
-                "tool_count": state.tool_count,
-                "error": state.error,
-                "attempts": state.attempts,
-                "retry_in": (
-                    max(0.0, state.next_retry_at - now)
-                    if state.status == "failed"
-                    else 0.0
-                ),
-            })
+            out.append(
+                {
+                    "name": name,
+                    "status": state.status,
+                    "transport": state.transport,
+                    "tool_count": state.tool_count,
+                    "error": state.error,
+                    "attempts": state.attempts,
+                    "retry_in": (
+                        max(0.0, state.next_retry_at - now) if state.status == "failed" else 0.0
+                    ),
+                }
+            )
         return out
 
     def status_counts(self) -> tuple[int, int]:
@@ -996,12 +1010,19 @@ class McpManager:
             if not url.startswith(("http://", "https://")):
                 raise ValueError(f"'url' must start with http:// or https:// (got {url!r})")
             return HttpMcpConnection(
-                name, url, cfg.get("headers"),
+                name,
+                url,
+                cfg.get("headers"),
                 transport=str(cfg.get("transport", "auto")).lower(),
                 **options,
             )
         return McpConnection(
-            name, cfg["command"], cfg.get("args"), cfg.get("env"), **options,
+            name,
+            cfg["command"],
+            cfg.get("args"),
+            cfg.get("env"),
+            cwd=cfg.get("cwd"),
+            **options,
         )
 
     def get_tool_definitions(self) -> list[dict]:
@@ -1015,11 +1036,14 @@ class McpManager:
                     f"{_NAME_RE.pattern} and be at most {_MAX_PREFIXED_TOOL_LEN} chars"
                 )
                 continue
-            definitions.append({
-                "name": full_name,
-                "description": tool.get("description") or f"MCP tool {tool['name']} from {tool['serverName']}",
-                "input_schema": tool.get("inputSchema") or {"type": "object", "properties": {}},
-            })
+            definitions.append(
+                {
+                    "name": full_name,
+                    "description": tool.get("description")
+                    or f"MCP tool {tool['name']} from {tool['serverName']}",
+                    "input_schema": tool.get("inputSchema") or {"type": "object", "properties": {}},
+                }
+            )
         return definitions
 
     def is_mcp_tool(self, name: str) -> bool:
@@ -1147,6 +1171,24 @@ class McpManager:
                         f"needs a 'command' (stdio) or 'url' (HTTP) field"
                     )
                 continue
+            configured_cwd = config.get("cwd")
+            if configured_cwd is not None:
+                if not isinstance(configured_cwd, str) or not configured_cwd.strip():
+                    if strict:
+                        emit_warning(
+                            f"[mcp] Ignoring '{name}' in {path.name}: "
+                            "'cwd' must be a non-empty string"
+                        )
+                    continue
+                cwd_path = Path(os.path.expandvars(configured_cwd)).expanduser()
+                if not cwd_path.is_absolute():
+                    # settings.json lives under .claude/, while .mcp.json lives
+                    # directly in its project. Keep relative cwd values portable.
+                    config_root = path.parent
+                    if path.name == "settings.json" and config_root.name == ".claude":
+                        config_root = config_root.parent
+                    cwd_path = config_root / cwd_path
+                config = {**config, "cwd": str(cwd_path.resolve())}
             target[name] = config
 
 

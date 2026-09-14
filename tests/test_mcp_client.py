@@ -28,12 +28,13 @@ async def test_python_mcp_server_round_trip() -> None:
         await asyncio.wait_for(connection.initialize(), timeout=5)
         tools = await asyncio.wait_for(connection.list_tools(), timeout=5)
         assert [tool["name"] for tool in tools] == ["echo", "add"]
-        assert await asyncio.wait_for(
-            connection.call_tool("echo", {"text": "hello"}), timeout=5
-        ) == "hello"
-        assert await asyncio.wait_for(
-            connection.call_tool("add", {"a": 2, "b": 3}), timeout=5
-        ) == "5"
+        assert (
+            await asyncio.wait_for(connection.call_tool("echo", {"text": "hello"}), timeout=5)
+            == "hello"
+        )
+        assert (
+            await asyncio.wait_for(connection.call_tool("add", {"a": 2, "b": 3}), timeout=5) == "5"
+        )
     finally:
         connection.close()
         if process is not None:
@@ -43,9 +44,7 @@ async def test_python_mcp_server_round_trip() -> None:
 @pytest.mark.asyncio
 async def test_call_tool_times_out_on_a_stalled_server() -> None:
     """A server that never replies must not hang the agent forever."""
-    connection = McpConnection(
-        "slow", sys.executable, ["-c", STALL_SCRIPT], tool_timeout=0.5
-    )
+    connection = McpConnection("slow", sys.executable, ["-c", STALL_SCRIPT], tool_timeout=0.5)
     await connection.connect()
     try:
         with pytest.raises(McpTimeoutError):
@@ -72,18 +71,16 @@ async def test_call_tool_fails_fast_when_the_server_exits() -> None:
 @pytest.mark.asyncio
 async def test_manager_returns_an_error_string_instead_of_raising() -> None:
     """Tool failures degrade into result text so the agent turn survives."""
-    connection = McpConnection(
-        "slow", sys.executable, ["-c", STALL_SCRIPT], tool_timeout=0.5
-    )
+    connection = McpConnection("slow", sys.executable, ["-c", STALL_SCRIPT], tool_timeout=0.5)
     await connection.connect()
     manager = McpManager()
     manager._connections["slow"] = connection
     try:
-        result = await asyncio.wait_for(
-            manager.call_tool("mcp__slow__stall", {}), timeout=5
-        )
+        result = await asyncio.wait_for(manager.call_tool("mcp__slow__stall", {}), timeout=5)
         assert result.startswith("[mcp] tool 'stall' did not respond within 0.5s")
-        assert await manager.call_tool("mcp__ghost__x", {}) == "[mcp] Server 'ghost' is not connected."
+        assert (
+            await manager.call_tool("mcp__ghost__x", {}) == "[mcp] Server 'ghost' is not connected."
+        )
         malformed = await manager.call_tool("not_mcp", {})
         assert malformed.startswith("[mcp] Invalid MCP tool name")
     finally:
@@ -206,6 +203,11 @@ def test_build_connection_selects_the_transport() -> None:
     assert isinstance(stdio, McpConnection)
     assert stdio.transport == "stdio"
     assert stdio.tool_timeout == 60.0
+    assert stdio.cwd is None
+
+    with_cwd = manager._build_connection("local-cwd", {"command": "python", "cwd": "/tmp/project"})
+    assert isinstance(with_cwd, McpConnection)
+    assert with_cwd.cwd == "/tmp/project"
 
     remote = manager._build_connection(
         "remote", {"url": "https://host.test/mcp", "readOnly": True, "toolTimeout": 5}
@@ -237,10 +239,14 @@ def test_settings_json_without_mcp_servers_is_not_a_server_map(tmp_path, capsys)
 def test_broken_entries_are_reported_only_inside_mcp_servers(tmp_path, capsys) -> None:
     path = tmp_path / ".mcp.json"
     path.write_text(
-        json.dumps({"mcpServers": {
-            "broken": {"description": "no command and no url"},
-            "ok": {"command": "python"},
-        }}),
+        json.dumps(
+            {
+                "mcpServers": {
+                    "broken": {"description": "no command and no url"},
+                    "ok": {"command": "python"},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     target: dict[str, dict] = {}
@@ -262,9 +268,52 @@ def test_serverurl_is_accepted_as_an_alias_for_url(tmp_path) -> None:
     assert target["remote"]["url"] == "https://host.test/mcp"
 
 
-def test_install_root_config_is_loaded_outside_working_directory(
-    tmp_path, monkeypatch
-) -> None:
+def test_relative_stdio_cwd_is_resolved_from_mcp_config_project(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    path = project / ".mcp.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"demo": {"command": "python", "cwd": "."}}}),
+        encoding="utf-8",
+    )
+    target: dict[str, dict] = {}
+
+    McpManager()._merge_config_file(path, target)
+
+    assert target["demo"]["cwd"] == str(project.resolve())
+
+
+def test_settings_relative_stdio_cwd_is_resolved_from_project(tmp_path) -> None:
+    project = tmp_path / "project"
+    config_dir = project / ".claude"
+    config_dir.mkdir(parents=True)
+    path = config_dir / "settings.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"demo": {"command": "python", "cwd": "."}}}),
+        encoding="utf-8",
+    )
+    target: dict[str, dict] = {}
+
+    McpManager()._merge_config_file(path, target)
+
+    assert target["demo"]["cwd"] == str(project.resolve())
+
+
+def test_invalid_stdio_cwd_is_rejected(tmp_path, capsys) -> None:
+    path = tmp_path / ".mcp.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"demo": {"command": "python", "cwd": ""}}}),
+        encoding="utf-8",
+    )
+    target: dict[str, dict] = {}
+
+    McpManager()._merge_config_file(path, target)
+
+    assert target == {}
+    assert "'cwd' must be a non-empty string" in capsys.readouterr().out
+
+
+def test_install_root_config_is_loaded_outside_working_directory(tmp_path, monkeypatch) -> None:
     install_root = tmp_path / "install"
     home = tmp_path / "home"
     working = tmp_path / "working"
@@ -354,19 +403,21 @@ def _patch_servers(monkeypatch, manager: McpManager, fakes: dict[str, _FakeConne
     monkeypatch.setattr(
         manager, "_load_configs", lambda: {name: {"command": "x"} for name in fakes}
     )
-    monkeypatch.setattr(
-        manager, "_build_connection", lambda name, _cfg: fakes[name]
-    )
+    monkeypatch.setattr(manager, "_build_connection", lambda name, _cfg: fakes[name])
 
 
 @pytest.mark.asyncio
 async def test_servers_connect_in_parallel(monkeypatch) -> None:
     """Two 0.3s handshakes must overlap, not queue up one after the other."""
     manager = McpManager()
-    _patch_servers(monkeypatch, manager, {
-        "a": _FakeConnection(delay=0.3),
-        "b": _FakeConnection(delay=0.3),
-    })
+    _patch_servers(
+        monkeypatch,
+        manager,
+        {
+            "a": _FakeConnection(delay=0.3),
+            "b": _FakeConnection(delay=0.3),
+        },
+    )
 
     started = time.monotonic()
     assert await manager.load_and_connect() is True
@@ -455,10 +506,14 @@ async def test_background_retry_loop_reconnects_after_backoff(monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_server_statuses_cover_mixed_outcomes(monkeypatch) -> None:
     manager = McpManager()
-    _patch_servers(monkeypatch, manager, {
-        "up": _FakeConnection(tool_count=3),
-        "down": _FakeConnection(fail=True),
-    })
+    _patch_servers(
+        monkeypatch,
+        manager,
+        {
+            "up": _FakeConnection(tool_count=3),
+            "down": _FakeConnection(fail=True),
+        },
+    )
     assert await manager.load_and_connect() is False
 
     statuses = {s["name"]: s for s in manager.server_statuses()}

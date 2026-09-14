@@ -106,6 +106,7 @@ Test-Path extensions/phm/data/processed/fd001.npz
     "phm": {
       "command": "uv",
       "args": ["run", "--project", "extensions/phm", "phm-mcp"],
+      "cwd": ".",
       "readOnly": true,
       "connectTimeout": 30,
       "toolTimeout": 60
@@ -113,6 +114,7 @@ Test-Path extensions/phm/data/processed/fd001.npz
     "phm-admin": {
       "command": "uv",
       "args": ["run", "--project", "extensions/phm", "phm-admin-mcp"],
+      "cwd": ".",
       "readOnly": false,
       "connectTimeout": 30,
       "toolTimeout": 15
@@ -126,6 +128,10 @@ Test-Path extensions/phm/data/processed/fd001.npz
 - `phm` 必须为 `readOnly: true`；
 - `phm-admin` 必须为 `readOnly: false`，因为它会写队列、候选目录和模型注册表；
 - 训练不在 MCP 调用内部执行，所以管理 MCP 的 `toolTimeout` 不需要设置成训练时长。
+
+`cwd` 是 MCP 子进程的工作目录。相对值按配置所属项目解析，因此这里写 `.` 后，
+即使从仓库之外启动 `mini-claude`，`extensions/phm` 仍会按 Doro 仓库根目录定位。
+不要把仓库的 `F:\\...` 绝对路径写进可共享配置；只有临时排错时才建议使用绝对路径。
 
 修改 `.mcp.json` 后，如果 Agent 已经运行，执行：
 

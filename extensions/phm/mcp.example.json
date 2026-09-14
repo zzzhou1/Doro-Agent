@@ -3,6 +3,7 @@
     "phm": {
       "command": "uv",
       "args": ["run", "--project", "extensions/phm", "phm-mcp"],
+      "cwd": ".",
       "readOnly": true,
       "connectTimeout": 30,
       "toolTimeout": 60
@@ -10,6 +11,7 @@
     "phm-admin": {
       "command": "uv",
       "args": ["run", "--project", "extensions/phm", "phm-admin-mcp"],
+      "cwd": ".",
       "readOnly": false,
       "connectTimeout": 30,
       "toolTimeout": 15
