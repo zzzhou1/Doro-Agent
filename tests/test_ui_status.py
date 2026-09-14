@@ -234,6 +234,8 @@ def test_welcome_lists_effort_command(monkeypatch) -> None:
     ui.print_welcome()
 
     rendered = "\n".join(str(call.args[0]) for call in fake_console.print.call_args_list)
+    assert "Doro" in rendered
+    assert "Coding + PHM" in rendered
     assert "Commands:" in rendered
     assert "/model /effort /session" in rendered
 

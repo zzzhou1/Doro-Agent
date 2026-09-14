@@ -209,7 +209,9 @@ def print_welcome() -> None:
 
 
 def _render_welcome(_event: OutputEvent) -> None:
-    console.print("\n  [bold cyan]Mini Claude[/bold cyan][dim] — A minimal coding agent[/dim]\n")
+    console.print(
+        "\n  [bold cyan]Doro[/bold cyan][dim] — A local Coding + PHM agent[/dim]\n"
+    )
     console.print("[dim]  Type your request, or 'exit' to quit.[/dim]")
     console.print(f"[dim]  Commands: {welcome_command_line()}[/dim]\n")
 

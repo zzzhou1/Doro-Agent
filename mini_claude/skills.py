@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .frontmatter import parse_frontmatter
 
+INSTALL_ROOT = Path(__file__).resolve().parent.parent
+
 # ─── Types ──────────────────────────────────────────────────
 
 
@@ -21,7 +23,7 @@ class SkillDefinition:
     user_invocable: bool = True
     context: str = "inline"  # "inline" or "fork"
     prompt_template: str = ""
-    source: str = "project"  # "project" or "user"
+    source: str = "project"  # "bundled", "user", or "project"
     skill_dir: str = ""
 
 
@@ -36,6 +38,11 @@ def discover_skills() -> list[SkillDefinition]:
         return _cached_skills
 
     skills: dict[str, SkillDefinition] = {}
+
+    # Skills shipped with this Doro installation (lowest priority). This keeps
+    # vertical capabilities available when the CLI starts outside the repo.
+    bundled_dir = INSTALL_ROOT / ".claude" / "skills"
+    _load_skills_from_dir(bundled_dir, "bundled", skills)
 
     # User-level skills (lower priority)
     user_dir = Path.home() / ".claude" / "skills"

@@ -44,7 +44,7 @@ from .ui import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="mini-claude",
-        description="Mini Claude Code — a minimal coding agent",
+        description="Doro — a local Coding + PHM agent",
         add_help=False,
     )
     parser.add_argument("prompt", nargs="*", help="One-shot prompt")

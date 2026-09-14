@@ -574,13 +574,16 @@ Package build: mini-claude-phm 0.2.0 succeeded
 
 ### `/skills` 看不到 `/phm-training`
 
-确认从仓库根目录启动 `uv run mini-claude`，并确认文件存在：
+新版 Doro 会从安装根目录发现内置 Skill，不要求当前目录是源码仓库。先确认文件存在：
 
 ```powershell
-Test-Path .claude/skills/phm-training/SKILL.md
+Test-Path F:\LLM\mini-cc\claude-code-from-scratch-main\.claude\skills\phm-training\SKILL.md
 ```
 
-技能在启动时发现；已经运行的旧进程建议重新启动。
+再退出并重新启动 `mini-claude`，然后执行 `/skills`；技能列表应包含
+`/phm-training (bundled)`。Skill 在进程内有缓存，升级前已经运行的旧进程必须重启。
+如果仍然看不到，确认当前 `mini-claude` 是从这份源码进行的可编辑安装；普通 wheel
+安装需要在构建包中显式包含 `.claude/skills` 资源。
 
 ### `/mcp tools` 没有 `phm-admin`
 
