@@ -1,14 +1,10 @@
 ---
 name: phm-training
 description: 管理 NASA C-MAPSS FD001 的异步 LSTM/Transformer 训练任务、候选模型发布与回滚。
-allowed-tools:
-  - mcp__phm-admin__submit_training_job
-  - mcp__phm-admin__get_training_job
-  - mcp__phm-admin__list_training_jobs
-  - mcp__phm-admin__cancel_training_job
-  - mcp__phm-admin__promote_candidate_model
-  - mcp__phm-admin__rollback_phm_model
-  - mcp__phm-admin__get_training_control_status
+when-to-use: 用户要求训练、查看训练进度、取消任务、发布候选模型或回滚 PHM 模型时使用
+user-invocable: true
+context: inline
+allowed-tools: mcp__phm-admin__submit_training_job,mcp__phm-admin__get_training_job,mcp__phm-admin__list_training_jobs,mcp__phm-admin__cancel_training_job,mcp__phm-admin__promote_candidate_model,mcp__phm-admin__rollback_phm_model,mcp__phm-admin__get_training_control_status
 ---
 
 # PHM 在线训练管理
