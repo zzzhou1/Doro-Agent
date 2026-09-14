@@ -5,10 +5,40 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .jobs import ACTIVE_STATUSES, VERSION_PATTERN, JobStore
+from .jobs import VERSION_PATTERN, JobStore
 from .registry import MODEL_NAMES, ModelRegistry
+from .supervisor import WorkerSupervisor
 
 DEVICE_PATTERN = re.compile(r"^(auto|cpu|cuda(?::[0-9]+)?|mps)$")
+TRAINING_PRESETS: dict[str, dict[str, Any]] = {
+    "smoke": {
+        "epochs": 1,
+        "batch_size": 256,
+        "learning_rate": 1e-3,
+        "patience": 1,
+        "seed": 42,
+        "device": "auto",
+        "amp": False,
+    },
+    "standard": {
+        "epochs": 20,
+        "batch_size": 128,
+        "learning_rate": 1e-3,
+        "patience": 5,
+        "seed": 42,
+        "device": "auto",
+        "amp": False,
+    },
+    "thorough": {
+        "epochs": 50,
+        "batch_size": 64,
+        "learning_rate": 1e-3,
+        "patience": 8,
+        "seed": 42,
+        "device": "auto",
+        "amp": False,
+    },
+}
 
 
 class AdminService:
@@ -20,25 +50,58 @@ class AdminService:
         self.runtime_dir = runtime_dir
         self.jobs = JobStore(runtime_dir / "jobs.sqlite")
         self.registry = ModelRegistry(artifact_dir)
+        self.supervisor = WorkerSupervisor(data_dir, artifact_dir, runtime_dir)
 
     def submit_training_job(
         self,
         *,
         model: str,
         version: str | None = None,
-        epochs: int = 50,
-        batch_size: int = 64,
-        learning_rate: float = 1e-3,
-        patience: int = 8,
-        seed: int = 42,
-        device: str = "auto",
-        amp: bool = False,
+        preset: str = "standard",
+        epochs: int | None = None,
+        batch_size: int | None = None,
+        learning_rate: float | None = None,
+        patience: int | None = None,
+        seed: int | None = None,
+        device: str | None = None,
+        amp: bool | None = None,
+        auto_start_worker: bool = True,
+        preset_confirmed: bool = False,
     ) -> dict[str, Any]:
         self._validate_model(model)
+        if preset not in TRAINING_PRESETS:
+            raise ValueError("preset must be 'smoke', 'standard', or 'thorough'")
+        overrides = {
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+            "patience": patience,
+            "seed": seed,
+            "device": device,
+            "amp": amp,
+        }
+        has_overrides = any(value is not None for value in overrides.values())
+        if not has_overrides and not preset_confirmed:
+            resolved = TRAINING_PRESETS[preset]
+            raise ValueError(
+                "No hyperparameters were provided. Ask the user to confirm the "
+                f"'{preset}' preset before submitting: {resolved}"
+            )
+        params = dict(TRAINING_PRESETS[preset])
+        params.update({name: value for name, value in overrides.items() if value is not None})
+        if epochs is not None and patience is None:
+            params["patience"] = min(int(params["patience"]), epochs)
+        parameter_source = "confirmed_preset" if not has_overrides else "preset_with_overrides"
         version = version or f"candidate-{datetime.now(UTC):%Y%m%d-%H%M%S}"
         self._validate_version(version)
         self._validate_training_params(
-            epochs, batch_size, learning_rate, patience, seed, device, amp
+            int(params["epochs"]),
+            int(params["batch_size"]),
+            float(params["learning_rate"]),
+            int(params["patience"]),
+            int(params["seed"]),
+            str(params["device"]),
+            bool(params["amp"]),
         )
         processed = self.data_dir / "processed" / "fd001.npz"
         if not processed.is_file():
@@ -49,22 +112,42 @@ class AdminService:
             raise FileExistsError(f"Model version already exists: {model}/{version}")
         if self.jobs.has_version_conflict(model, version):
             raise ValueError(f"A queued or completed candidate already targets {model}/{version}")
-        params = {
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "learning_rate": learning_rate,
-            "patience": patience,
-            "seed": seed,
-            "device": device,
-            "amp": amp,
-        }
-        return self.jobs.enqueue(model, version, params)
+        job = self.jobs.enqueue(
+            model,
+            version,
+            params,
+            preset=preset,
+            parameter_source=parameter_source,
+            auto_start_worker=auto_start_worker,
+            parameter_overrides={
+                name: value for name, value in overrides.items() if value is not None
+            },
+        )
+        worker: dict[str, Any]
+        if auto_start_worker:
+            try:
+                worker = self.supervisor.ensure_worker()
+            except RuntimeError as error:
+                worker = {
+                    "action": "start_failed",
+                    "alive": False,
+                    "error": str(error),
+                }
+        else:
+            worker = {"action": "not_requested", **self.supervisor.status()}
+        return self._decorate_job(job, worker)
 
     def get_training_job(self, job_id: str) -> dict[str, Any]:
-        return self.jobs.require(job_id)
+        return self._decorate_job(self.jobs.require(job_id), self.supervisor.status())
 
     def list_training_jobs(self, limit: int = 20) -> dict[str, Any]:
-        return {"jobs": self.jobs.list(limit)}
+        jobs = self.jobs.list(limit)
+        return {
+            "jobs": [
+                {**job, "queue_position": self.jobs.queue_position(str(job["id"]))} for job in jobs
+            ],
+            "worker": self.supervisor.status(),
+        }
 
     def cancel_training_job(self, job_id: str) -> dict[str, Any]:
         return self.jobs.request_cancel(job_id)
@@ -96,12 +179,21 @@ class AdminService:
         return self.registry.snapshot()
 
     def worker_status(self) -> dict[str, Any]:
-        jobs = self.jobs.list(200)
-        active = [job for job in jobs if job["status"] in ACTIVE_STATUSES]
+        return self.supervisor.status()
+
+    def ensure_training_worker(self) -> dict[str, Any]:
+        return self.supervisor.ensure_worker()
+
+    def stop_training_worker(self) -> dict[str, Any]:
+        return self.supervisor.request_stop()
+
+    def _decorate_job(self, job: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
         return {
-            "active_jobs": active,
-            "worker_required": bool(active),
-            "hint": "Run 'uv run --project extensions/phm phm-worker' to process queued jobs.",
+            **job,
+            "queue_position": self.jobs.queue_position(str(job["id"])),
+            "worker": worker,
+            "published": self.registry.snapshot().get("active", {}).get(job["model"])
+            == job["candidate_version"],
         }
 
     @staticmethod

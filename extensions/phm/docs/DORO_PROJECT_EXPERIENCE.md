@@ -80,8 +80,8 @@ PHM 工作流通过独立 Python 包、MCP 和 Skills 接入：
 - 使用 LSTM 与 Transformer 进行 RUL 回归；
 - 将质检、预测、比较、指标和趋势证据封装成只读 MCP；
 - 将提交训练、查询进度、取消、发布和回滚封装成写管理 MCP；
-- 使用 SQLite 保存训练任务；
-- 使用独立 Worker 在 CPU/CUDA/MPS 上运行训练；
+- 使用 SQLite 保存训练任务、参数来源和 Worker 租约/心跳；
+- 按需隐藏启动或复用独立 Worker，在 CPU/CUDA/MPS 上运行训练并空闲退出；
 - 使用候选区、活动版本注册表、原子发布和回滚管理模型生命周期。
 
 这一层体现的是工业算法与 Agent 工程的融合，而不只是模型训练。
@@ -161,8 +161,9 @@ Python / LLM API / Tool Calling / MCP / PyTorch / SQLite / LSTM / Transformer
 - **融合工业 PHM 确定性能力：** 围绕 NASA C-MAPSS 构建设备级无泄漏数据管道和
   LSTM/Transformer RUL 模型，通过只读 MCP 与 PHM Skill 提供数据质检、模型推理、
   模型比较和退化证据，避免 LLM 直接生成不可验证的寿命数值。
-- **实现异步模型生命周期：** 使用 SQLite 队列与独立 Worker 解耦 Agent 请求和耗时
-  训练，支持 CPU/CUDA/MPS、epoch 进度、协作式取消和失败记录；设计候选模型校验、
+- **实现异步模型生命周期：** 使用 SQLite 队列与受托管 Worker 解耦 Agent 请求和
+  耗时训练，支持单实例租约、真实心跳、按需隐藏启动、空闲退出、CPU/CUDA/MPS、
+  epoch 进度、协作式取消和失败记录；设计候选模型校验、
   原子发布、活动版本与回滚机制，并以独立写管理 MCP 隔离训练控制和只读推理权限。
 
 这四条的逻辑顺序是：平台底座 → Coding 能力 → PHM 能力 → 模型工程。它比“先写一堆
@@ -294,7 +295,7 @@ MCP 将能力、输入 Schema、进程依赖和权限边界独立出来。PHM �
 ### 10.8 项目目前最大的限制是什么？
 
 - PHM 数据是仿真 FD001，不代表真实生产分布；
-- 当前是单机单 Worker，不是分布式训练平台；
+- 当前是单机单实例 Worker，不是分布式训练平台；
 - 模型发布需要人工检查，但还没有完整的自动门禁与审批服务；
 - 当前 Web/UI 展示有限，主要通过终端和 Agent 对话交互；
 - Doro 仍保留 `mini-claude` 内部命名，尚未进行全量品牌迁移。
@@ -369,7 +370,7 @@ PHM：检查 MCP → 查询活动模型 → 检查发动机 → RUL 预测/比�
 3. 为候选发布增加指标阈值、回归测试和审批门禁；
 4. 接入 MLflow 或自建实验追踪；
 5. 支持用户上传静态工业时序文件进行批量质检和预测；
-6. 增加 Worker 心跳、租约、失败重试和多 Worker 调度；
+6. 增加训练 checkpoint 恢复、失败重试和多 Worker 资源调度；
 7. 扩展 FD002～FD004 多工况与多故障模式；
 8. 增加 conformal prediction、漂移监控和覆盖率评估；
 9. 逐步将内部 `mini-claude` 命名迁移为 Doro，并提供配置/会话兼容迁移；

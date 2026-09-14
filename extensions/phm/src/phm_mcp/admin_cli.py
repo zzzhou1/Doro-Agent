@@ -18,13 +18,24 @@ def build_parser() -> argparse.ArgumentParser:
     submit = commands.add_parser("submit", help="Queue a training job")
     submit.add_argument("--model", choices=["lstm", "transformer"], required=True)
     submit.add_argument("--version")
-    submit.add_argument("--epochs", type=int, default=50)
-    submit.add_argument("--batch-size", type=int, default=64)
-    submit.add_argument("--learning-rate", type=float, default=1e-3)
-    submit.add_argument("--patience", type=int, default=8)
-    submit.add_argument("--seed", type=int, default=42)
-    submit.add_argument("--device", default="auto")
-    submit.add_argument("--amp", action="store_true")
+    submit.add_argument("--preset", choices=["smoke", "standard", "thorough"], default="standard")
+    submit.add_argument("--epochs", type=int)
+    submit.add_argument("--batch-size", type=int)
+    submit.add_argument("--learning-rate", type=float)
+    submit.add_argument("--patience", type=int)
+    submit.add_argument("--seed", type=int)
+    submit.add_argument("--device")
+    submit.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
+    submit.add_argument(
+        "--auto-start-worker",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    submit.add_argument(
+        "--confirm-preset",
+        action="store_true",
+        help="Confirm use of the selected preset when no hyperparameters are provided",
+    )
 
     status = commands.add_parser("status", help="Read one job")
     status.add_argument("job_id")
@@ -37,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     rollback = commands.add_parser("rollback", help="Roll back an active model")
     rollback.add_argument("--model", choices=["lstm", "transformer"], required=True)
     commands.add_parser("registry", help="Show active and available models")
+    commands.add_parser("worker-status", help="Show managed worker heartbeat and queue")
+    commands.add_parser("worker-start", help="Start or reuse the managed worker")
+    commands.add_parser("worker-stop", help="Request the managed worker to stop")
     return parser
 
 
@@ -51,6 +65,7 @@ def main(argv: list[str] | None = None) -> None:
         result = service.submit_training_job(
             model=args.model,
             version=args.version,
+            preset=args.preset,
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
@@ -58,6 +73,8 @@ def main(argv: list[str] | None = None) -> None:
             seed=args.seed,
             device=args.device,
             amp=args.amp,
+            auto_start_worker=args.auto_start_worker,
+            preset_confirmed=args.confirm_preset,
         )
     elif args.command == "status":
         result = service.get_training_job(args.job_id)
@@ -69,6 +86,12 @@ def main(argv: list[str] | None = None) -> None:
         result = service.promote_candidate_model(args.job_id)
     elif args.command == "rollback":
         result = service.rollback_model(args.model)
+    elif args.command == "worker-status":
+        result = service.worker_status()
+    elif args.command == "worker-start":
+        result = service.ensure_training_worker()
+    elif args.command == "worker-stop":
+        result = service.stop_training_worker()
     else:
         result = service.get_model_registry()
     print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

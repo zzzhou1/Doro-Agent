@@ -53,6 +53,7 @@ def test_online_job_train_promote_predict_and_rollback(tmp_path: Path) -> None:
         batch_size=4,
         patience=1,
         device="cpu",
+        auto_start_worker=False,
     )
 
     completed = TrainingWorker(data_dir, artifact_dir, runtime_dir).run_once()

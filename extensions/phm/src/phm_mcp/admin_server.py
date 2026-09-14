@@ -12,35 +12,75 @@ from .config import DEFAULT_ARTIFACT_DIR, DEFAULT_DATA_DIR, DEFAULT_RUNTIME_DIR
 TOOLS = [
     {
         "name": "submit_training_job",
-        "description": "Queue an asynchronous LSTM or Transformer training job.",
+        "description": "Queue asynchronous training after preset confirmation and auto-start the managed worker.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "model": {"type": "string", "enum": ["lstm", "transformer"]},
                 "version": {"type": "string", "minLength": 1, "maxLength": 64},
-                "epochs": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                "preset": {
+                    "type": "string",
+                    "enum": ["smoke", "standard", "thorough"],
+                    "default": "standard",
+                    "description": "Confirmed training preset; explicit parameters override it.",
+                },
+                "epochs": {"type": "integer", "minimum": 1, "maximum": 500},
                 "batch_size": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 4096,
-                    "default": 64,
                 },
                 "learning_rate": {
                     "type": "number",
                     "exclusiveMinimum": 0,
                     "maximum": 1,
-                    "default": 0.001,
                 },
-                "patience": {"type": "integer", "minimum": 1, "default": 8},
-                "seed": {"type": "integer", "minimum": 0, "default": 42},
+                "patience": {"type": "integer", "minimum": 1},
+                "seed": {"type": "integer", "minimum": 0},
                 "device": {
                     "type": "string",
                     "pattern": "^(auto|cpu|cuda(:[0-9]+)?|mps)$",
-                    "default": "auto",
                 },
-                "amp": {"type": "boolean", "default": False},
+                "amp": {"type": "boolean"},
+                "auto_start_worker": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Start or reuse the managed background worker.",
+                },
+                "preset_confirmed": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true only after the user explicitly accepts the preset when no hyperparameters were supplied.",
+                },
             },
             "required": ["model"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "ensure_training_worker",
+        "description": "Idempotently start or reuse the managed background training worker.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_training_worker_status",
+        "description": "Read worker heartbeat, PID, current job, queue depth, and stop state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "stop_training_worker",
+        "description": "Request the managed worker to stop after its current job.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
             "additionalProperties": False,
         },
     },
@@ -125,6 +165,12 @@ def call_tool(service: AdminService, name: str, args: dict) -> dict:
     try:
         if name == "submit_training_job":
             return _tool_result(service.submit_training_job(**args))
+        if name == "ensure_training_worker":
+            return _tool_result(service.ensure_training_worker())
+        if name == "get_training_worker_status":
+            return _tool_result(service.worker_status())
+        if name == "stop_training_worker":
+            return _tool_result(service.stop_training_worker())
         if name == "get_training_job":
             return _tool_result(service.get_training_job(str(args["job_id"])))
         if name == "list_training_jobs":
@@ -143,7 +189,14 @@ def call_tool(service: AdminService, name: str, args: dict) -> dict:
                 }
             )
         return _tool_result({"error": f"Unknown tool: {name}"}, True)
-    except (KeyError, TypeError, ValueError, FileNotFoundError, FileExistsError) as error:
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+        FileNotFoundError,
+        FileExistsError,
+    ) as error:
         return _tool_result({"error": str(error)}, True)
 
 

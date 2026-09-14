@@ -527,7 +527,7 @@ get_degradation_evidence
 uv run --project extensions/phm pytest -q extensions/phm/tests
 ```
 
-当前结果：`24 passed`。测试覆盖标签、设备级切分、标准化、滑窗、哈希校验与备用
+当前结果：`32 passed`。测试覆盖标签、设备级切分、标准化、滑窗、哈希校验与备用
 下载、模型输出形状、指标公式、MCP 初始化、工具列表和错误返回。
 
 注意：从仓库根目录执行时要显式传入 `extensions/phm/tests`。否则 pytest 可能读取
@@ -540,7 +540,7 @@ uv run --project extensions/phm pytest -q extensions/phm/tests
 uv run pytest -q
 ```
 
-当前主项目结果为 `229 passed`。
+当前主项目结果为 `232 passed`。
 
 代码质量检查：
 
@@ -768,10 +768,12 @@ PHM 训练链路
 
 ```text
 Agent / phm-admin CLI
-       ↓ 提交、查询、取消
+       ↓ 预设确认、提交、查询、取消
 phm-admin（写 MCP）
        ↓ SQLite 持久化队列
-phm-worker（独立进程，单 Worker）
+Worker Supervisor（隐藏启动、租约、心跳、空闲退出）
+       ↓
+phm-worker（独立进程、单实例）
        ↓ CPU / CUDA / MPS 训练
 artifacts/candidates/<job_id>/
        ↓ 人工确认发布
@@ -781,8 +783,9 @@ phm（只读 MCP）→ 在线预测与模型比较
 ```
 
 这种设计的价值是训练耗时不会占住 MCP 请求，Agent 或终端退出后任务记录仍在
-SQLite 中；推理与训练进程也互不阻塞。这里的“实时”是任务状态和发布后的模型切换
-可以立即查询，不代表毫秒级流式训练。
+SQLite 中；推理与训练进程也互不阻塞。后台 Worker 由提交操作按需启动，队列空闲
+5 分钟后退出，不要求用户保留独立 PowerShell 窗口。这里的“实时”是任务状态和
+发布后的模型切换可以立即查询，不代表毫秒级流式训练。
 
 ### 15.2 启动在线训练系统
 
@@ -794,15 +797,16 @@ uv run --project extensions/phm phm download
 uv run --project extensions/phm phm prepare
 ```
 
-打开一个单独终端并保持 Worker 运行：
+默认通过 Agent 或 CLI 提交时会隐藏启动或复用 Worker，不需要先打开单独终端。
+调试时仍可前台启动：
 
 ```powershell
 uv run --project extensions/phm phm-worker
 ```
 
-当前实现按“单机、单 Worker”设计。SQLite 的领取事务可以避免同一个任务被重复
-领取，但不要同时启动多个长期 Worker；Worker 重启时会把上一次遗留的
-`running/cancelling` 任务标记为失败，避免任务永久卡住。
+当前实现按“单机、单实例 Worker”设计。SQLite 租约避免重复启动，Worker 每 5 秒
+写入 PID、状态、当前任务和心跳；租约过期会显示为 `stale`。Worker 重启时会把上
+一次遗留的 `running/cancelling` 任务标记为失败，避免任务永久卡住。
 
 另一个终端提交任务：
 
@@ -835,6 +839,24 @@ uv run --project extensions/phm phm-admin list --limit 20
 
 `progress` 会记录当前 epoch、目标 epoch、训练 MSE、验证 MSE、最佳验证 MSE、
 早停累计轮数和实际设备。`succeeded` 后还会返回候选路径与验证/测试指标。
+
+如果没有指定任何超参数，Agent 必须先展示并询问是否同意预设，不能直接提交。
+服务端提供：`smoke`（1 epoch）、`standard`（20 epochs）和 `thorough`（50 epochs）。
+CLI 使用纯预设时也要显式传入 `--confirm-preset`：
+
+```powershell
+uv run --project extensions/phm phm-admin submit `
+  --model lstm --version lstm-v2 `
+  --preset standard --confirm-preset
+```
+
+提交默认自动启动 Worker；使用 `--no-auto-start-worker` 可只入队。Worker 管理命令：
+
+```powershell
+uv run --project extensions/phm phm-admin worker-status
+uv run --project extensions/phm phm-admin worker-start
+uv run --project extensions/phm phm-admin worker-stop
+```
 
 取消排队或运行中的任务：
 
@@ -927,17 +949,19 @@ uv run --project extensions/phm python -c "import torch; print(torch.__version__
 将 `mcp.example.json` 的两个节点合并到根目录 `.mcp.json` 后，用 `/mcp tools`
 检查。不要把 `phm-admin` 错标为只读；它会写 SQLite、候选目录和模型注册表。
 
-管理 MCP 共提供 7 个工具：提交、查询单任务、列出任务、取消、发布、回滚和读取
-控制状态。项目技能 `.claude/skills/phm-training/SKILL.md` 进一步规定：发布与回滚
-必须在用户明确确认后执行，测试集指标不能用于反复选择候选模型。
+管理 MCP 共提供 10 个工具：提交、确保 Worker、读取 Worker 状态、请求停止 Worker、
+查询单任务、列出任务、取消、发布、回滚和读取控制状态。项目技能
+`.claude/skills/phm-training/SKILL.md` 进一步规定：未指定超参数时先征得预设同意，
+发布与回滚必须由用户明确确认，测试集指标不能用于反复选择候选模型。
 
 ## 十八、异步训练面试说明
 
 可以这样解释 Doro 中的在线训练：
 
 > 我没有把耗时 PyTorch 训练直接放进 Agent 的 MCP 请求，而是把 Doro 设计成控制面：
-> 写管理 MCP 校验参数并将任务写入 SQLite，独立 Worker 在 CPU/CUDA/MPS 上训练并
-> 回写 epoch 进度，产物先进入候选区。用户检查验证结果并明确确认后，系统才原子更新
+> 写管理 MCP 校验参数并将任务写入 SQLite，Supervisor 自动启动或复用具有租约与
+> 心跳的独立 Worker，在 CPU/CUDA/MPS 上训练并回写 epoch 进度，产物先进入候选区。
+> 用户检查验证结果并明确确认后，系统才原子更新
 > 活动模型；推理 MCP 始终只读，训练期间旧版本仍能服务，异常时可以回滚。这使同一个
 > Doro 既能执行 Coding 任务，也能安全管理工业模型的训练与推理。
 

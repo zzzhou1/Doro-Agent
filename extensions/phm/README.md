@@ -18,7 +18,8 @@ C-MAPSS FD001 仿真数据训练 LSTM 和轻量 Transformer，预测航空发动
 - 数据仍然使用已经下载并预处理好的静态 FD001；
 - 用户可以在 Agent 对话中提交 LSTM/Transformer 训练任务；
 - Agent 通过写权限管理 MCP 把任务写入 SQLite 队列；
-- 独立 `phm-worker` 在后台执行耗时训练；
+- 管理服务按需隐藏启动或复用单实例 `phm-worker`；
+- Worker 通过 SQLite 租约与心跳报告真实存活状态，空闲 5 分钟后退出；
 - Agent 可以随时查询 epoch 进度、指标和错误；
 - 训练成功后先形成候选模型，不会自动替换当前模型；
 - 用户明确确认后，Agent 才能发布候选模型；
@@ -31,11 +32,11 @@ MCP 请求等待几十分钟，也能在训练期间继续使用原有模型预�
 ```text
 用户对话
   ↓ /phm-training
-Mini Claude Code Agent
+Doro Agent
   ↓ 写管理操作
 phm-admin MCP
   ↓ SQLite 持久化队列
-phm-worker
+Worker Supervisor → phm-worker（租约、心跳、空闲退出）
   ↓ CPU / CUDA / MPS 训练
 候选模型 artifacts/candidates/<job_id>
   ↓ 用户确认后原子发布
@@ -49,12 +50,12 @@ phm 只读 MCP → 数据质检、RUL 预测、模型比较
 | 组件 | 权限 | 作用 |
 |---|---:|---|
 | `phm` MCP | 只读 | 数据质检、RUL 预测、模型比较、指标和退化趋势 |
-| `phm-admin` MCP | 可写 | 提交/查询/取消训练、发布、回滚、读取控制状态 |
-| `phm-worker` | 本地进程 | 从 SQLite 队列领取任务并运行 PyTorch 训练 |
-| SQLite | 本地状态 | 持久化任务参数、状态、进度、指标和错误 |
+| `phm-admin` MCP | 可写 | 提交/查询/取消训练、Worker 管理、发布、回滚 |
+| `phm-worker` | 本地进程 | 按需隐藏启动，从 SQLite 队列领取任务并运行训练 |
+| SQLite | 本地状态 | 持久化任务、预设、进度、Worker 租约/心跳和错误 |
 | 模型注册表 | 本地状态 | 记录 LSTM/Transformer 的活动版本和回滚历史 |
 | `/phm` skill | 只读编排 | 约束先质检、再推理、最后解释 |
-| `/phm-training` skill | 管理编排 | 约束训练、候选检查、确认发布和显式回滚 |
+| `/phm-training` skill | 管理编排 | 约束预设确认、训练、Worker、发布和显式回滚 |
 
 把推理和管理 MCP 分开不是训练算法的必要条件，但能让客户端准确区分只读与写操作。
 日常查询可以只启用 `phm`；只有需要改变任务或活动模型状态时才使用 `phm-admin`。
@@ -143,30 +144,25 @@ Test-Path extensions/phm/data/processed/fd001.npz
 
 ## 五、在 Agent 中在线训练：完整教程
 
-### 5.1 终端一：启动长期 Worker
+### 5.1 默认不需要手工启动 Worker
 
-打开一个独立 PowerShell 窗口：
+通过 Agent 或新版 `phm-admin submit` 提交任务时，管理服务默认会隐藏启动或复用
+单实例 Worker。Worker 使用 SQLite 租约和心跳防止重复启动，队列空闲 5 分钟后自动
+退出；因此不需要长期保留独立 PowerShell 窗口。
+
+仍可在调试时前台启动，系统发现已有健康 Worker 时会拒绝第二个实例：
 
 ```powershell
-cd F:\LLM\mini-cc\claude-code-from-scratch-main
 uv run --project extensions/phm phm-worker
 ```
 
-正常输出类似：
-
-```text
-PHM training worker started (pid=12345).
-```
-
-当前实现定位为单机、单 Worker，不要同时启动多个长期 Worker。
-
 - 排队任务保存在 SQLite 中，关闭 Agent 不会丢失任务；
-- 只要 Worker 仍运行，关闭 Agent 后训练仍会继续；
+- Worker 是独立后台进程，关闭 Agent 后训练仍会继续；
 - 如果强制关闭正在训练的 Worker，当前任务不会断点续训；
 - 下次 Worker 启动时会把遗留的 `running/cancelling` 任务标记为 `failed`；
 - 尚未领取的 `queued` 任务会保留，Worker 重启后可以继续领取。
 
-### 5.2 终端二：启动 Agent
+### 5.2 启动 Agent
 
 从仓库根目录启动：
 
@@ -194,15 +190,18 @@ uv run mini-claude
 /mcp tools
 ```
 
-应该看到 `phm` 和 `phm-admin` 均已连接。`phm-admin` 下应有 7 个工具：
+应该看到 `phm` 和 `phm-admin` 均已连接。`phm-admin` 下应有 10 个工具：
 
 1. `submit_training_job`
-2. `get_training_job`
-3. `list_training_jobs`
-4. `cancel_training_job`
-5. `promote_candidate_model`
-6. `rollback_phm_model`
-7. `get_training_control_status`
+2. `ensure_training_worker`
+3. `get_training_worker_status`
+4. `stop_training_worker`
+5. `get_training_job`
+6. `list_training_jobs`
+7. `cancel_training_job`
+8. `promote_candidate_model`
+9. `rollback_phm_model`
+10. `get_training_control_status`
 
 如果没有连接，先执行：
 
@@ -224,21 +223,32 @@ Agent 会先调用管理 MCP 的控制状态工具。初始状态通常类似：
 ```text
 lstm active: v1
 transformer active: v1
-active jobs: []
+worker: stopped
+queue depth: 0
 ```
 
-注意：当前控制状态没有 Worker 心跳。`worker_required` 表示存在排队/活动任务，需要
-Worker 处理，不代表系统已经确认某个 Worker 进程在线。
+Worker 状态来自真实租约和心跳，包含 `alive`、PID、当前任务、最近心跳时间、队列
+深度和停止请求。超过租约期限没有心跳的进程会显示为 `stale`，不会被误报为在线。
 
 ### 5.4 第二步：通过 Agent 提交训练
 
-建议为每次实验使用唯一且可读的版本号。LSTM 示例：
+如果只说明模型而没有给出任何超参数，Agent 不会立即提交，而会先展示完整预设：
 
 ```text
-/phm-training 提交一个 LSTM 候选训练任务：版本 lstm-v2，最多 20 个 epoch，batch size 128，学习率 0.001，patience 5，seed 42，device auto。只提交，不要发布。
+/phm-training 训练一个 LSTM 候选模型，版本 lstm-v2。不要发布。
 ```
 
-Transformer 示例：
+Agent 默认建议 `standard`：20 epochs、batch size 128、learning rate 0.001、
+patience 5、seed 42、device auto、AMP 关闭。只有你明确回复同意后，Agent 才能以
+`preset_confirmed=true` 提交。也可选择：
+
+| 预设 | epochs | batch | lr | patience | 用途 |
+|---|---:|---:|---:|---:|---|
+| `smoke` | 1 | 256 | 0.001 | 1 | 快速验证完整链路 |
+| `standard` | 20 | 128 | 0.001 | 5 | 默认候选实验 |
+| `thorough` | 50 | 64 | 0.001 | 8 | 更高训练预算 |
+
+预设只代表计算预算，不承诺精度。也可以直接给出全部或部分参数：
 
 ```text
 /phm-training 提交一个 Transformer 候选训练任务：版本 transformer-v2，最多 20 个 epoch，batch size 128，学习率 0.001，patience 5，seed 42，device auto。只提交，不要发布。
@@ -248,18 +258,22 @@ Agent 应返回类似：
 
 ```text
 job_id: train-20260914050530-d903f45c
-status: queued
-candidate_version: lstm-v2
+status: running
+queue_position: null
+worker: busy, pid=12345, heartbeat=2s ago
+parameter_source: confirmed_preset
+published: false
 ```
 
-务必保存 job ID。提交操作只写入队列，应该很快返回，不会在对话里等待整个训练过程。
+提交接口返回后，Agent 会再查询一次状态。回复必须区分“已经写入队列”和“Worker 已
+领取”，并列出实际参数及其来源；`succeeded` 仍只是候选完成，不代表已经发布。
 
 如果任务长时间停在 `queued`：
 
-1. 检查终端一是否已经运行 `phm-worker`；
-2. 查看 Worker 终端有没有环境或数据错误；
-3. 确认 Agent 和 Worker 使用了相同的 `PHM_RUNTIME_DIR`；
-4. 默认情况下，两者都会使用 `extensions/phm/runtime/jobs.sqlite`。
+1. 用 `/phm-training` 查询真实 Worker 心跳和错误；
+2. 让 Agent 调用 `ensure_training_worker` 幂等重试；
+3. 查看 `extensions/phm/runtime/worker.stderr.log`；
+4. 确认管理 MCP 和 Worker 使用相同的 `PHM_RUNTIME_DIR`。
 
 ### 5.5 第三步：在 Agent 中查看进度
 
@@ -371,15 +385,16 @@ candidate_version: lstm-v2
 
 ## 六、无需 Agent 的管理命令
 
-Agent 不可用时，可以用同一服务的 CLI 完成管理。
-
-启动 Worker：
+Agent 不可用时，可以用同一服务的 CLI 完成管理。默认提交会自动启动后台 Worker；
+也可显式管理 Worker：
 
 ```powershell
-uv run --project extensions/phm phm-worker
+uv run --project extensions/phm phm-admin worker-status
+uv run --project extensions/phm phm-admin worker-start
+uv run --project extensions/phm phm-admin worker-stop
 ```
 
-提交：
+使用完整自定义参数提交：
 
 ```powershell
 uv run --project extensions/phm phm-admin submit `
@@ -392,6 +407,18 @@ uv run --project extensions/phm phm-admin submit `
   --seed 42 `
   --device auto
 ```
+
+只使用预设时，CLI 也要求显式确认：
+
+```powershell
+uv run --project extensions/phm phm-admin submit `
+  --model lstm `
+  --version lstm-v2 `
+  --preset standard `
+  --confirm-preset
+```
+
+若只想入队而不自动启动 Worker，增加 `--no-auto-start-worker`。
 
 查询、列表、取消、发布和回滚：
 
@@ -462,7 +489,7 @@ uv run --project extensions/phm phm predict --unit-id 42
 ```
 
 直接 `phm train` 会把结果写入正式模型目录，不经过异步队列和候选发布流程。因此，
-面向 Agent 的日常实验更推荐使用 `phm-admin submit + phm-worker + promote`。
+面向 Agent 的日常实验更推荐使用 `phm-admin submit + 托管 Worker + promote`。
 
 ## 九、目录和运行产物
 
@@ -478,6 +505,7 @@ extensions/phm/
 │   ├── inference.py          # 数据质检与 RUL 推理
 │   ├── jobs.py               # SQLite 任务队列
 │   ├── worker.py             # 异步训练 Worker
+│   ├── supervisor.py         # 单实例租约、隐藏启动和停止请求
 │   ├── registry.py           # 发布、活动版本、回滚
 │   ├── server.py             # 只读推理 MCP
 │   ├── admin_server.py       # 写管理 MCP
@@ -527,8 +555,8 @@ uv run pytest -q
 当前已验证：
 
 ```text
-PHM tests: 24 passed
-Main project tests: 229 passed
+PHM tests: 32 passed
+Main project tests: 232 passed
 Package build: mini-claude-phm 0.2.0 succeeded
 ```
 
@@ -565,11 +593,21 @@ Test-Path .claude/skills/phm-training/SKILL.md
 
 ### 任务一直是 `queued`
 
-管理 MCP 只负责写队列。请在独立终端启动：
+先让 Agent 查询 `get_training_worker_status`。若 `alive=false` 或状态为 `stale`，调用
+`ensure_training_worker`；CLI 等价命令是：
 
 ```powershell
-uv run --project extensions/phm phm-worker
+uv run --project extensions/phm phm-admin worker-start
 ```
+
+若启动失败，查看 `extensions/phm/runtime/worker.stderr.log`。任务已经持久化，不需要
+重复提交。只有调试 Worker 本身时才建议前台运行 `phm-worker`。
+
+### 为什么只说“训练 LSTM”时没有立即提交
+
+这是预期的安全交互。未给任何超参数时，Agent 必须先列出建议的 `standard` 完整
+参数并询问是否同意；你明确同意后才提交。这样不会在未告知训练预算时自动占用
+CPU/GPU。若已经给出部分参数，Agent 会明确说明其余字段由哪个预设补齐。
 
 ### 任务变成 `failed`
 

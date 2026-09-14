@@ -388,9 +388,9 @@ uv run --project extensions/phm phm prepare
 uv run --project extensions/phm phm train --model lstm
 uv run --project extensions/phm phm train --model transformer
 uv run --project extensions/phm phm predict --unit-id 42
-# 可选：启动异步训练 Worker，并在另一个终端提交候选任务
-uv run --project extensions/phm phm-worker
-uv run --project extensions/phm phm-admin submit --model lstm --version lstm-v2 --device auto
+# 异步提交会自动启动/复用后台 Worker；纯预设提交需显式确认
+uv run --project extensions/phm phm-admin submit --model lstm --version lstm-v2 --preset standard --confirm-preset
+uv run --project extensions/phm phm-admin worker-status
 ```
 
 
@@ -399,7 +399,8 @@ uv run --project extensions/phm phm-admin submit --model lstm --version lstm-v2 
 
 把 `extensions/phm/mcp.example.json` 中的 `phm` 与 `phm-admin` 配置合并到项目
 `.mcp.json` 后，可用 `/phm` 进行只读分析，也可提交异步训练任务。Worker 支持
-CPU、CUDA 与 MPS，候选需显式发布才会成为活动版本。详细说明见：
+CPU、CUDA 与 MPS；后台 Worker 具有单实例租约、心跳和空闲退出，候选需显式发布
+才会成为活动版本。Agent 在用户未指定超参数时会先展示预设并询问同意。详细说明见：
 
 - [Agent 在线训练快速教程](extensions/phm/README.md)
 - [PHM 技术实现与复现指南](extensions/phm/docs/FD001_PHM_GUIDE.md)
