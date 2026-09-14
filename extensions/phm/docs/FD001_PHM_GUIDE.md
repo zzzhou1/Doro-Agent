@@ -61,7 +61,7 @@ NASA FD001 原始文件
         ↓ 仅用训练发动机拟合标准化器
 30 周期滑动窗口
         ↓
-LSTM / Transformer 离线训练
+LSTM / Transformer 训练（CLI 直跑或 Agent 异步任务）
         ↓ 保存权重、配置、指标、残差分位数
 只读 MCP Server
         ↓
@@ -152,7 +152,7 @@ extensions/phm/
 │   ├── admin_server.py           # 写权限管理 MCP Server
 │   ├── admin_cli.py              # 训练、发布和回滚管理命令
 │   └── cli.py                    # 数据、离线训练、评估与预测命令
-├── tests/                        # 24 项扩展测试
+├── tests/                        # 32 项扩展测试
 ├── runtime/                      # SQLite 队列，Git 忽略
 ├── data/
 │   ├── raw/                      # 原始 FD001，Git 忽略
@@ -541,14 +541,17 @@ uv run --project extensions/phm pytest -q extensions/phm/tests
 uv run pytest -q
 ```
 
-当前主项目结果为 `232 passed`。
+当前主项目结果为 `234 passed`。
 
 代码质量检查：
 
 ```powershell
-uv run ruff check extensions/phm/src extensions/phm/tests
-uv run ruff format --check extensions/phm/src extensions/phm/tests
+uvx ruff check extensions/phm/src extensions/phm/tests
+uvx ruff format --check extensions/phm/src extensions/phm/tests
 ```
+
+`uvx` 会为 Ruff 使用隔离的临时环境。如果希望完全使用仓库根环境，应先运行
+`uv sync --extra test --extra lint`，再把上述 `uvx` 改为 `uv run`。
 
 ### 11.2 常见问题
 
@@ -588,8 +591,8 @@ PyTorch 可能提示 `norm_first=True` 导致 nested tensor 优化未启用。�
 - [ ] 训练 LSTM 与 Transformer，并使用不同版本目录保存实验；
 - [ ] 用 `phm evaluate` 查看保存指标；
 - [ ] 用 42 号发动机完成 CLI 双模型预测；
-- [ ] 用 `/mcp tools` 确认六个 PHM 工具；
-- [ ] 运行 24 项扩展测试与 229 项主项目回归；
+- [ ] 用 `/mcp tools` 确认 `phm` 的 6 个只读工具和 `phm-admin` 的 10 个管理工具；
+- [ ] 分别运行 32 项扩展测试与 234 项主项目回归；
 - [ ] 在结论中注明 FD001 仿真、单工况、单故障模式的限制。
 
 ## 十二、面试讲解指南
@@ -618,7 +621,7 @@ PyTorch 可能提示 `norm_first=True` 导致 nested tensor 优化未启用。�
 3. 用相同数据、种子与早停规则训练 LSTM 和 Transformer；
 4. 保存权重、参数、指标、Git 提交和残差分位数；
 5. 将能力封装成 6 个只读 MCP 工具，并用技能规则约束“先质检、后推理、再解释”；
-6. 用 24 项扩展测试和 229 项主项目回归验证集成没有破坏原系统。
+6. 用 32 项扩展测试和 234 项主项目回归验证集成没有破坏原系统。
 
 **Result：** LSTM 在官方测试集达到 RMSE 15.16、MAE 11.42；Transformer 达到
 NASA Score 432.39。主 Agent 能真实连接 MCP 服务，完成单设备检查、双模型比较和
@@ -678,10 +681,13 @@ MAE 直观，RMSE 强调大误差，NASA Score 体现预测过高比预测过低
 比较结果、补充指标与趋势证据，并统一披露安全边界。关键是 Agent 只做编排和解释，
 不能替代确定性模型计算。
 
-#### Q10：为什么 MCP 工具全部只读？
+#### Q10：为什么把 MCP 拆成只读和管理两类？
 
-聊天中的意图可能不完整。将下载、训练和状态修改排除在在线工具之外，可以限制副作用，
-降低误触发成本，并使审计更简单。新模型必须通过显式离线命令产生。
+聊天中的意图可能不完整，因此日常质检、预测、比较、指标和趋势查询放在 `phm` 的
+6 个只读工具中；训练任务、Worker、发布与回滚放在 `phm-admin` 的 10 个管理工具中。
+这样既能由 Agent 按需异步训练，又能让普通分析保持清晰的只读身份，并对写操作单独
+实施权限和审计。管理工具不是训练计算进程：它负责校验、入队和生命周期控制，耗时
+训练由独立 Worker 执行。
 
 #### Q11：趋势证据是不是故障根因？
 
@@ -692,7 +698,7 @@ MAE 直观，RMSE 强调大误差，NASA Score 体现预测过高比预测过低
 #### Q12：下一步如何扩展到真实工业项目？
 
 优先级可以是：多工况归一化与 FD002/FD004；严格的超参数验证；conformal 区间；
-数据漂移和 OOD 检测；模型注册与版本回滚；在线时序数据接入；维护阈值与成本函数；
+数据漂移和 OOD 检测；模型注册与版本回滚；静态 CSV/NPZ 批量导入与预测；维护阈值与成本函数；
 最后才是更复杂的网络。真实航空场景还需要专家审核、配置管理、验证确认和适航流程。
 
 ### 12.4 五分钟现场演示顺序
@@ -714,7 +720,7 @@ MAE 直观，RMSE 强调大误差，NASA Score 体现预测过高比预测过低
 - 不说“置信区间保证 80% 安全覆盖”：当前只是验证残差经验区间；
 - 不说“发现了传感器故障根因”：当前只有描述性趋势；
 - 不说“可直接用于真实发动机”：FD001 是仿真、单工况、单故障模式；
-- 不把 229 项主项目回归说成 229 项均由本扩展新增：本扩展新增的是 24 项测试。
+- 不把主项目的 234 项回归测试说成均由 PHM 扩展新增；PHM 是单独运行的 32 项测试。
 
 ## 十三、Doro 统一项目定位
 
@@ -953,7 +959,9 @@ uv run --project extensions/phm python -c "import torch; print(torch.__version__
 管理 MCP 共提供 10 个工具：提交、确保 Worker、读取 Worker 状态、请求停止 Worker、
 查询单任务、列出任务、取消、发布、回滚和读取控制状态。项目技能
 `.claude/skills/phm-training/SKILL.md` 进一步规定：未指定超参数时先征得预设同意，
-发布与回滚必须由用户明确确认，测试集指标不能用于反复选择候选模型。
+发布与回滚的用户确认目前主要由 `/phm-training` Skill 和 Doro 的权限策略约束；
+`phm-admin` CLI 与管理服务本身尚未实现不可绕过的审批令牌。因此 CLI 应只交给受信任
+操作者，并把完整服务端审批作为生产化演进项。测试集指标不能用于反复选择候选模型。
 
 ## 十八、异步训练面试说明
 
@@ -987,7 +995,8 @@ uv run --project extensions/phm python -c "import torch; print(torch.__version__
    “统计证据不等于物理因果”的边界；
 8. **资源治理**：增加任务优先级、显存预算、超时、磁盘配额和候选清理策略；
 9. **可观测性**：结构化日志、任务耗时分位数、错误分类、Worker 心跳和告警；
-10. **多 Worker 演进**：引入任务租约、心跳与重试，随后再替换为分布式队列；
+10. **多 Worker 演进**：在现有全局单实例租约/心跳之上增加任务级租约、资源调度、
+    失败重试和孤儿恢复，随后再替换为分布式队列；
 11. **权限与审计**：记录操作者、发布审批、不可变事件日志和模型签名；
 12. **基线扩充**：加入 XGBoost/TCN 等简单可解释基线，比较精度、参数量和推理
     时延。

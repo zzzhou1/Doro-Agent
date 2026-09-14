@@ -63,7 +63,7 @@ uv run doro
 
 | 安装方式 | 需要额外装什么 | 依赖版本 |
 | --- | --- | --- |
-| `uv sync` | uv（单个二进制） | 严格等于 `uv.lock` 锁定的 32 个包 |
+| `uv sync` | uv（单个二进制） | 严格按照 `uv.lock` 中当前解析出的依赖版本安装 |
 | `pip install -e .` | 无，Python 自带 pip | 落在 `pyproject.toml` 的版本范围内，可能和锁定版本不同 |
 
 `uv.lock` 只对 uv 生效，pip 会完全忽略它。想要和别人装到一模一样的依赖，就用 uv。
@@ -103,12 +103,20 @@ python -m pip install -e ".[test]"
 
 ## 验证安装
 
+主项目与 PHM 扩展使用两个独立环境，应分别执行：
+
 ```powershell
-pytest
+# 主项目：使用根目录 .venv，并由根 pyproject.toml 收集 tests/
+uv run pytest -q
+
+# PHM：使用 extensions/phm/.venv，并显式收集扩展测试
+uv run --project extensions/phm pytest -q extensions/phm/tests
 ```
 
-全部测试应当通过（当前主项目 234 项、PHM 扩展 32 项）。测试**不需要任何 API
-Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
+当前结果分别为主项目 `234 passed`、PHM 扩展 `32 passed`。这不是一个包含 266 项
+测试的单一测试套件。两套测试都**不需要任何 API Key**，因此可以在配置密钥之前先
+运行，确认代码本身没问题。测试范围与未覆盖项见
+[PHM 测试说明](extensions/phm/README.md#十测试与验证)。
 
 ## 使用 `.env` 配置
 
@@ -306,7 +314,9 @@ DORO_PRICE_CACHE_READ=0.4
 - `~/.claude/plans/`
 - `~/.doro/.env`（用户级兜底配置）
 
-> **复现提示**：用户级目录会显著影响功能表现。如果本机装过 Claude Code 并配置了 skills 或 MCP，`/skills` 列出的内容与权限行为会和别人**不一致**。Doro 自带 Skill 则从安装根目录加载，不依赖启动目录。想确认自己的环境，请对照上面三份清单逐项检查。
+> **复现提示**：用户级目录会显著影响功能表现。如果本机为其他 Agent 配置过 skills
+> 或 MCP，`/skills` 列出的内容与权限行为可能和别人**不一致**。Doro 自带 Skill 从
+> 安装根目录加载，不依赖启动目录。想确认自己的环境，请对照上面三份清单逐项检查。
 
 ### MCP server 配置
 

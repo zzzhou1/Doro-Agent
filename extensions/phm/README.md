@@ -557,9 +557,15 @@ uv run pytest -q
 
 ```text
 PHM tests: 32 passed
-Main project tests: 232 passed
+Main project tests: 234 passed
 Package build: doro-phm 0.2.0 succeeded
 ```
+
+两组数字来自独立环境和独立命令，不是一次 pytest 运行得到的总数。主项目测试使用
+Mock Provider、临时目录以及本地测试 MCP Server，不会请求真实 Anthropic/OpenAI
+接口；PHM 测试使用合成数组、临时 SQLite 和一轮微型 CPU LSTM 训练，不会重新下载
+NASA 数据或完整复训 FD001。当前测试不等同于真实网络、GPU、长时间后台 Worker 或
+生产负载验证。
 
 ## 十一、当前 v1 模型结果
 
@@ -641,7 +647,8 @@ uv run --project extensions/phm phm-admin status JOB_ID
 ### 能否同时训练多个任务
 
 可以提交多个任务，它们会排队；当前单 Worker 按创建时间依次执行，不会并行占用多张
-显卡。需要真正多 Worker 时，要增加租约/心跳和孤儿任务恢复机制。
+显卡。当前已经有全局单实例 Worker 的 SQLite 租约与心跳；若要扩展为真正的多 Worker，
+还需把它演进为任务级 Worker 租约，并增加资源调度、失败重试和孤儿任务恢复机制。
 
 ## 十三、安全与适用边界
 
