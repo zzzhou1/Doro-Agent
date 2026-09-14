@@ -1,11 +1,14 @@
-# Mini Claude PHM 扩展
+# Doro 的工业健康管理（PHM）能力
 
-这是一个面向工业装备健康管理（PHM）的本地扩展：使用 NASA C-MAPSS FD001
-仿真数据训练 LSTM 和轻量 Transformer，预测航空发动机剩余使用寿命（RUL），并将
-数据质检、推理、异步训练、候选模型发布与回滚接入 Mini Claude Code Agent。
+这是 Doro 统一智能体中的工业垂直能力模块，不是另一个独立 Agent。它使用 NASA
+C-MAPSS FD001 仿真数据训练 LSTM 和轻量 Transformer，预测航空发动机剩余使用
+寿命（RUL），并通过 Doro 共用的 Skill、MCP、权限和工具编排系统完成数据质检、
+推理、异步训练、候选模型发布与回滚。当前兼容 CLI 仍叫 `mini-claude`，PHM 独立
+包仍叫 `mini-claude-phm`。
 
-本 README 重点说明如何在 Agent 对话中按需提交训练和测试。更完整的数据字段、
-预处理、指标、面试与简历说明见 [data/README.md](data/README.md)。
+本 README 重点说明如何在 Agent 对话中按需提交训练和测试。更完整的技术说明见
+[FD001 PHM 技术指南](docs/FD001_PHM_GUIDE.md)，统一项目经历见
+[Doro Coding + PHM Agent 项目指南](docs/DORO_PROJECT_EXPERIENCE.md)。
 
 ## 一、先理解这里的“Agent 在线训练”
 
@@ -601,4 +604,7 @@ uv run --project extensions/phm phm-admin status JOB_ID
 - 预测不能用于真实航空器维修放行、适航判断或安全决策；
 - “在线训练”表示按需任务控制和发布后立即切换，不表示实时遥测或持续学习。
 
-进一步阅读：[NASA C-MAPSS FD001 完整中文教程、面试与简历指南](data/README.md)。
+进一步阅读：
+
+- [NASA C-MAPSS FD001 技术实现与复现指南](docs/FD001_PHM_GUIDE.md)
+- [Doro Coding + PHM Agent 项目经历与面试指南](docs/DORO_PROJECT_EXPERIENCE.md)

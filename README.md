@@ -1,6 +1,38 @@
-# Mini Claude Code（Python）
+# Doro：可 Coding、可 PHM 的本地智能体（Python）
 
-一个从零实现的轻量级 Coding Agent。项目现为纯 Python 版本，不需要 Node.js 或 npm。
+Doro 是一个可扩展的本地智能体平台：同一套 Agent 循环、工具调用、权限、Skill、
+MCP、会话和上下文系统，既能完成代码搜索、修改、Shell、Git 与测试验证，也能编排
+工业装备数据质检、RUL 推理、异步模型训练、候选发布与回滚。
+
+当前 Python 包和兼容 CLI 仍使用 `mini_claude` / `mini-claude` 名称，不影响以 Doro
+作为统一项目名；后续如需改内部名称，应连同配置目录和历史会话进行兼容迁移。
+
+## 统一能力总览
+
+| 能力域 | Doro 能力 | 确定性执行主体 |
+|---|---|---|
+| Coding | 仓库理解、代码搜索、文件修改、Shell、Git、测试与构建 | 本地 Coding 工具 |
+| PHM 推理 | 数据质检、RUL 预测、模型比较、指标与退化证据 | LSTM/Transformer + 只读 MCP |
+| PHM 训练 | 任务提交、epoch 进度、取消、候选评审、发布与回滚 | SQLite + Worker + 管理 MCP |
+| Agent 平台 | 多模型后端、Tool Calling、权限、Skill、MCP、会话、记忆、压缩、子 Agent | Doro Agent Core |
+
+```text
+                              ┌─ 文件 / 搜索 / Shell / Web / Git ─→ Coding
+用户 → Doro Agent Core ───────┤
+                              └─ Skill / MCP / Worker / Model ───→ PHM
+            │
+            ├─ Anthropic / OpenAI-compatible
+            ├─ 权限与危险操作确认
+            ├─ 会话、记忆与上下文压缩
+            └─ 子 Agent 与项目级配置
+```
+
+Doro 统一负责自然语言理解、任务规划、工具选择、权限和执行反馈；具体代码修改由本地
+工具完成，RUL 数值由本地时序模型计算，耗时训练由独立 Worker 执行。项目详细定位：
+
+- [Doro Coding + PHM Agent 项目经历与面试指南](extensions/phm/docs/DORO_PROJECT_EXPERIENCE.md)
+- [Agent 中在线训练与测试教程](extensions/phm/README.md)
+- [FD001 PHM 技术实现与复现指南](extensions/phm/docs/FD001_PHM_GUIDE.md)
 
 ## 快速开始
 
@@ -339,11 +371,13 @@ mini_claude/
 └── ui.py            终端 UI
 ```
 
-## NASA C-MAPSS PHM 扩展
+## Doro 的工业健康管理（PHM）能力
 
-`extensions/phm/` 提供独立的工业健康管理扩展：使用 NASA C-MAPSS
-FD001 训练 LSTM 与轻量 Transformer；只读 MCP 提供数据质检与 RUL 推理，
-独立管理 MCP、SQLite 队列和 Worker 提供按需异步训练、候选发布与回滚。
+`extensions/phm/` 是 Doro 的工业垂直能力，而不是另一个独立 Agent。它复用 Doro
+的工具编排、权限、Skill 和 MCP 体系，使用 NASA C-MAPSS FD001 训练 LSTM 与轻量
+Transformer；只读 MCP 提供数据质检与 RUL 推理，写管理 MCP、SQLite 队列和
+Worker 提供按需异步训练、候选发布与回滚。因此，同一个 Doro 既能 Coding，也能
+执行可验证、可追踪的 PHM 工作流。
 
 ```powershell
 uv sync --project extensions/phm --extra test
@@ -363,8 +397,11 @@ uv run --project extensions/phm phm-admin submit --model lstm --version lstm-v2 
 
 把 `extensions/phm/mcp.example.json` 中的 `phm` 与 `phm-admin` 配置合并到项目
 `.mcp.json` 后，可用 `/phm` 进行只读分析，也可提交异步训练任务。Worker 支持
-CPU、CUDA 与 MPS，候选需显式发布才会成为活动版本。详细说明见
-`extensions/phm/README.md` 和 `extensions/phm/data/README.md`。
+CPU、CUDA 与 MPS，候选需显式发布才会成为活动版本。详细说明见：
+
+- [Agent 在线训练快速教程](extensions/phm/README.md)
+- [PHM 技术实现与复现指南](extensions/phm/docs/FD001_PHM_GUIDE.md)
+- [Doro 统一项目经历与面试指南](extensions/phm/docs/DORO_PROJECT_EXPERIENCE.md)
 
 运行时会话和记忆保存在用户目录下的 `.mini-claude/` 中。
 
