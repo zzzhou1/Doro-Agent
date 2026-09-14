@@ -40,7 +40,7 @@ TOOLS = [
                     "type": "string",
                     "enum": ["lstm", "transformer"],
                 },
-                "version": {"type": "string", "default": "v1"},
+                "version": {"type": "string", "default": "active"},
             },
             "required": ["unit_id", "model"],
             "additionalProperties": False,
@@ -53,7 +53,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "unit_id": {"type": "integer", "minimum": 1},
-                "version": {"type": "string", "default": "v1"},
+                "version": {"type": "string", "default": "active"},
             },
             "required": ["unit_id"],
             "additionalProperties": False,
@@ -69,7 +69,7 @@ TOOLS = [
                     "type": "string",
                     "enum": ["lstm", "transformer"],
                 },
-                "version": {"type": "string", "default": "v1"},
+                "version": {"type": "string", "default": "active"},
             },
             "required": ["model"],
             "additionalProperties": False,
@@ -120,16 +120,17 @@ def call_tool(service: InferenceService, name: str, args: dict) -> dict:
                 service.predict_rul(
                     int(args["unit_id"]),
                     str(args["model"]),
-                    str(args.get("version", "v1")),
+                    str(args.get("version", "active")),
                 )
             )
         if name == "compare_rul_models":
             return _tool_result(
-                service.compare_models(int(args["unit_id"]), str(args.get("version", "v1")))
+                service.compare_models(int(args["unit_id"]), str(args.get("version", "active")))
             )
         if name == "get_model_metrics":
             model = str(args["model"])
-            version = str(args.get("version", "v1"))
+            requested_version = str(args.get("version", "active"))
+            version = service.registry.resolve(model, requested_version)
             matching = [
                 item
                 for item in service.list_models()
@@ -156,7 +157,7 @@ def handle(request: dict, service: InferenceService) -> dict | None:
         result = {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "mini-claude-phm", "version": "0.1.0"},
+            "serverInfo": {"name": "mini-claude-phm", "version": "0.2.0"},
         }
     elif method == "tools/list":
         result = {"tools": TOOLS}

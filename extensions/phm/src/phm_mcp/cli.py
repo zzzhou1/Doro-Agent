@@ -28,12 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--learning-rate", type=float, default=1e-3)
     train.add_argument("--patience", type=int, default=8)
     train.add_argument("--seed", type=int, default=42)
+    train.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:N, or mps")
+    train.add_argument("--amp", action="store_true", help="Use CUDA mixed precision")
     evaluate = commands.add_parser("evaluate", help="Show saved metrics")
     evaluate.add_argument("--model", choices=["lstm", "transformer"])
     predict = commands.add_parser("predict", help="Predict one test engine")
     predict.add_argument("--unit-id", type=int, required=True)
     predict.add_argument("--model", choices=["lstm", "transformer"])
-    predict.add_argument("--version", default="v1")
+    predict.add_argument("--version", default="active")
     return parser
 
 
@@ -63,6 +65,8 @@ def main(argv: list[str] | None = None) -> None:
             learning_rate=args.learning_rate,
             patience=args.patience,
             seed=args.seed,
+            device=args.device,
+            amp=args.amp,
         )
     else:
         service = InferenceService(data_dir, artifact_dir)

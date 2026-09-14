@@ -9,12 +9,14 @@ import torch
 
 from .data import column_names
 from .models import create_model
+from .registry import ModelRegistry
 
 
 class InferenceService:
     def __init__(self, data_dir: Path, artifact_dir: Path) -> None:
         self.data_dir = data_dir
         self.artifact_dir = artifact_dir
+        self.registry = ModelRegistry(artifact_dir)
         self._data: dict[str, np.ndarray] | None = None
         self._models: dict[tuple[str, str], tuple[torch.nn.Module, dict, dict, dict]] = {}
 
@@ -30,6 +32,7 @@ class InferenceService:
         return self._data
 
     def list_models(self) -> list[dict[str, Any]]:
+        active = self.registry.snapshot()["active"]
         models: list[dict[str, Any]] = []
         for name in ("lstm", "transformer"):
             root = self.artifact_dir / name
@@ -47,21 +50,23 @@ class InferenceService:
                     {
                         "model": name,
                         "version": version.name,
+                        "active": active.get(name) == version.name,
                         "metrics": json.loads(metrics_path.read_text(encoding="utf-8")),
                     }
                 )
         return models
 
     def _load_model(self, name: str, version: str):
-        key = (name, version)
+        resolved_version = self.registry.resolve(name, version)
+        key = (name, resolved_version)
         if key in self._models:
             return self._models[key]
-        target = self.artifact_dir / name / version
+        target = self.artifact_dir / name / resolved_version
         config_path = target / "config.json"
         metrics_path = target / "metrics.json"
         interval_path = target / "residual_quantiles.json"
         if not (target / "model.pt").is_file():
-            raise FileNotFoundError(f"Model artifact not found: {name}/{version}")
+            raise FileNotFoundError(f"Model artifact not found: {name}/{resolved_version}")
         config = json.loads(config_path.read_text(encoding="utf-8"))
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         interval = json.loads(interval_path.read_text(encoding="utf-8"))
@@ -76,6 +81,9 @@ class InferenceService:
         model.eval()
         self._models[key] = (model, config, metrics, interval)
         return self._models[key]
+
+    def clear_model_cache(self) -> None:
+        self._models.clear()
 
     def _unit_index(self, unit_id: int) -> int:
         ids = self._prepared()["test_unit_ids"].astype(np.int64)
@@ -101,13 +109,14 @@ class InferenceService:
             "data_quality": "passed" if finite else "failed",
         }
 
-    def predict_rul(self, unit_id: int, model_name: str, version: str = "v1") -> dict[str, Any]:
+    def predict_rul(self, unit_id: int, model_name: str, version: str = "active") -> dict[str, Any]:
         quality = self.inspect_engine(unit_id)
         if quality["data_quality"] != "passed":
             raise ValueError("Engine window failed data-quality checks")
         data = self._prepared()
         index = self._unit_index(unit_id)
         model, config, metrics, interval = self._load_model(model_name, version)
+        resolved_version = str(config.get("version", version))
         values = torch.from_numpy(data["test_x"][index : index + 1])
         with torch.inference_mode():
             prediction = max(0.0, float(model(values).item()))
@@ -116,7 +125,7 @@ class InferenceService:
         return {
             **quality,
             "model": model_name,
-            "version": version,
+            "version": resolved_version,
             "predicted_rul": round(prediction, 3),
             "interval": {
                 "coverage": interval["coverage"],
@@ -129,7 +138,7 @@ class InferenceService:
             "model_git_sha": config.get("git_sha", ""),
         }
 
-    def compare_models(self, unit_id: int, version: str = "v1") -> dict[str, Any]:
+    def compare_models(self, unit_id: int, version: str = "active") -> dict[str, Any]:
         predictions = [self.predict_rul(unit_id, name, version) for name in ("lstm", "transformer")]
         recommended = min(predictions, key=lambda item: item["validation_metrics"]["rmse"])
         return {

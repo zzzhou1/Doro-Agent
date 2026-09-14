@@ -342,8 +342,8 @@ mini_claude/
 ## NASA C-MAPSS PHM 扩展
 
 `extensions/phm/` 提供独立的工业健康管理扩展：使用 NASA C-MAPSS
-FD001 训练 LSTM 与轻量 Transformer，并通过只读 MCP Server 向主 Agent
-暴露数据质检、RUL 预测、模型比较、已保存指标和退化趋势证据。
+FD001 训练 LSTM 与轻量 Transformer；只读 MCP 提供数据质检与 RUL 推理，
+独立管理 MCP、SQLite 队列和 Worker 提供按需异步训练、候选发布与回滚。
 
 ```powershell
 uv sync --project extensions/phm --extra test
@@ -352,14 +352,19 @@ uv run --project extensions/phm phm prepare
 uv run --project extensions/phm phm train --model lstm
 uv run --project extensions/phm phm train --model transformer
 uv run --project extensions/phm phm predict --unit-id 42
+# 可选：启动异步训练 Worker，并在另一个终端提交候选任务
+uv run --project extensions/phm phm-worker
+uv run --project extensions/phm phm-admin submit --model lstm --version lstm-v2 --device auto
 ```
+
 
 下载器优先使用 NASA 官方数据门户；若连接超时，则自动切换到固定提交的
 只读镜像，并对三个 FD001 文件逐一校验 SHA-256。
 
-把 `extensions/phm/mcp.example.json` 中的 `phm` 配置合并到项目 `.mcp.json`
-后，可使用 `/phm` 执行有数据证据的 RUL 分析。训练是显式离线步骤；聊天中的
-MCP 工具只读且不会重新训练模型。详细说明见 `extensions/phm/README.md`。
+把 `extensions/phm/mcp.example.json` 中的 `phm` 与 `phm-admin` 配置合并到项目
+`.mcp.json` 后，可用 `/phm` 进行只读分析，也可提交异步训练任务。Worker 支持
+CPU、CUDA 与 MPS，候选需显式发布才会成为活动版本。详细说明见
+`extensions/phm/README.md` 和 `extensions/phm/data/README.md`。
 
 运行时会话和记忆保存在用户目录下的 `.mini-claude/` 中。
 

@@ -5,6 +5,7 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PACKAGE_ROOT / "data"
 DEFAULT_ARTIFACT_DIR = PACKAGE_ROOT / "artifacts"
+DEFAULT_RUNTIME_DIR = PACKAGE_ROOT / "runtime"
 NASA_CMAPSS_URL = "https://data.nasa.gov/docs/legacy/CMAPSSData.zip"
 FD001_MIRROR_COMMIT = "97cf10d200d07c6e9e20e75c52639ce6a08736ce"
 FD001_MIRROR_URL = (

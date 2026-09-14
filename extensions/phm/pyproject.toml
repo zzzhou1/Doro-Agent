@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini-claude-phm"
-version = "0.1.0"
-description = "NASA C-MAPSS RUL models and a read-only MCP server for Mini Claude Code"
+version = "0.2.0"
+description = "NASA C-MAPSS RUL models with inference and training-control MCP servers"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.0,<2.3",
@@ -18,6 +18,9 @@ test = ["pytest>=8,<10"]
 [project.scripts]
 phm = "phm_mcp.cli:main"
 phm-mcp = "phm_mcp.server:main"
+phm-admin = "phm_mcp.admin_cli:main"
+phm-admin-mcp = "phm_mcp.admin_server:main"
+phm-worker = "phm_mcp.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
