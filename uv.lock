@@ -121,7 +121,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-code-from-scratch"
+name = "doro-agent"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

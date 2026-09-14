@@ -81,7 +81,7 @@ tool_definitions: list[ToolDef] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": 'Glob pattern to match files (e.g., "**/*.py", "mini_claude/**/*")'},
+                "pattern": {"type": "string", "description": 'Glob pattern to match files (e.g., "**/*.py", "doro/**/*")'},
                 "path": {"type": "string", "description": "Base directory to search from. Defaults to current directory."},
             },
             "required": ["pattern"],
@@ -436,7 +436,7 @@ def _web_fetch(inp: dict) -> str:
 
     url = inp.get("url", "")
     max_length = inp.get("max_length", 50000)
-    req = urllib.request.Request(url, headers={"User-Agent": "mini-claude/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "doro/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             content_type = resp.headers.get("Content-Type", "")

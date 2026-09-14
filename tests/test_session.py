@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-import mini_claude.session as session
+import doro.session as session
 
 
 @pytest.fixture()

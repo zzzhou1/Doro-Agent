@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mini_claude.tools import execute_tool
+from doro.tools import execute_tool
 
 
 @pytest.mark.asyncio

@@ -17,9 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-from mini_claude.agent import Agent, _anthropic_usage_totals, _openai_usage_totals
-from mini_claude.pricing import cache_read_discount_for
-from mini_claude.ui import (
+from doro.agent import Agent, _anthropic_usage_totals, _openai_usage_totals
+from doro.pricing import cache_read_discount_for
+from doro.ui import (
     estimate_cost_usd,
     format_cached_percentage,
     format_round_footer,
@@ -237,8 +237,8 @@ class _FakeOpenAiClient:
 
 
 async def _stream_once(chunks):
-    with patch("mini_claude.agent.openai.AsyncOpenAI"), patch(
-        "mini_claude.agent.stop_spinner"
+    with patch("doro.agent.openai.AsyncOpenAI"), patch(
+        "doro.agent.stop_spinner"
     ):
         agent = Agent(backend="openai", api_key="test-key", custom_system_prompt="p")
     agent._openai_client = _FakeOpenAiClient(chunks)
@@ -313,8 +313,8 @@ def test_round_slice_sums_every_api_call_in_one_turn() -> None:
     therefore larger than the context window, which only reads correctly once
     the call count is printed next to it.
     """
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"), patch(
-        "mini_claude.agent.stop_spinner"
+    with patch("doro.agent.anthropic.AsyncAnthropic"), patch(
+        "doro.agent.stop_spinner"
     ):
         agent = Agent(backend="anthropic", api_key="test-key", custom_system_prompt="p")
     agent.is_sub_agent = True  # keep chat()/printing out of the picture
@@ -335,8 +335,8 @@ def test_round_slice_sums_every_api_call_in_one_turn() -> None:
 
 
 def test_round_slice_is_empty_before_any_call() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"), patch(
-        "mini_claude.agent.stop_spinner"
+    with patch("doro.agent.anthropic.AsyncAnthropic"), patch(
+        "doro.agent.stop_spinner"
     ):
         agent = Agent(backend="anthropic", api_key="test-key", custom_system_prompt="p")
 

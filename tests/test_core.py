@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from mini_claude import session
-from mini_claude.frontmatter import format_frontmatter, parse_frontmatter
+from doro import session
+from doro.frontmatter import format_frontmatter, parse_frontmatter
 
 
 def test_frontmatter_round_trip() -> None:

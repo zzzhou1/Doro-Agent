@@ -85,7 +85,7 @@ def config_search_paths(cwd: Path | None = None) -> list[Path]:
 
 
 PROTOCOL_VERSION = "2024-11-05"
-CLIENT_INFO = {"name": "mini-claude", "version": "1.0.0"}
+CLIENT_INFO = {"name": "doro", "version": "1.0.0"}
 
 # Tool names are forwarded verbatim to the model API, which only accepts a
 # conservative character set and caps the length.

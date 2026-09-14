@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import mini_claude.ui as ui
+import doro.ui as ui
 
 
 def _snapshot():

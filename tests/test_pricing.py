@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from mini_claude.pricing import (
+from doro.pricing import (
     DEFAULT_PRICING,
     PRICING_TABLE,
     ModelPricing,
@@ -74,7 +74,7 @@ def test_empty_model_name_falls_back() -> None:
 
 
 def test_env_json_overrides_one_model() -> None:
-    env = {"MINI_CLAUDE_PRICES": '{"gpt-5.6-sol": {"input": 1, "output": 4}}'}
+    env = {"DORO_PRICES": '{"gpt-5.6-sol": {"input": 1, "output": 4}}'}
     resolution = resolve_pricing("gpt-5.6-sol", backend="openai", env=env)
 
     assert resolution.match == "env"
@@ -86,7 +86,7 @@ def test_env_json_overrides_one_model() -> None:
 
 
 def test_env_field_vars_apply_to_every_model() -> None:
-    env = {"MINI_CLAUDE_PRICE_INPUT": "2", "MINI_CLAUDE_PRICE_CACHE_READ": "0.25"}
+    env = {"DORO_PRICE_INPUT": "2", "DORO_PRICE_CACHE_READ": "0.25"}
     resolution = resolve_pricing("whatever", backend="openai", env=env)
 
     assert resolution.match == "env"
@@ -96,8 +96,8 @@ def test_env_field_vars_apply_to_every_model() -> None:
 
 def test_env_json_beats_global_field_vars() -> None:
     env = {
-        "MINI_CLAUDE_PRICES": '{"m": {"input": 9}}',
-        "MINI_CLAUDE_PRICE_INPUT": "2",
+        "DORO_PRICES": '{"m": {"input": 9}}',
+        "DORO_PRICE_INPUT": "2",
     }
     resolution = resolve_pricing("m", backend="openai", env=env)
 
@@ -107,20 +107,20 @@ def test_env_json_beats_global_field_vars() -> None:
 def test_overridden_pricing_is_no_longer_an_estimate() -> None:
     """An explicit operator number is not an approximation."""
     resolution = resolve_pricing(
-        "mystery", backend="openai", env={"MINI_CLAUDE_PRICE_INPUT": "1"}
+        "mystery", backend="openai", env={"DORO_PRICE_INPUT": "1"}
     )
     assert resolution.estimated is False
 
 
 @pytest.mark.parametrize("raw", ["not json at all", "[]", '{"m": "oops"}', "{}"])
 def test_malformed_env_prices_are_ignored(raw: str) -> None:
-    resolution = resolve_pricing("m", backend="openai", env={"MINI_CLAUDE_PRICES": raw})
+    resolution = resolve_pricing("m", backend="openai", env={"DORO_PRICES": raw})
     assert resolution.match == "fallback"
 
 
 def test_negative_or_non_numeric_env_prices_are_ignored() -> None:
-    assert resolve_pricing("m", env={"MINI_CLAUDE_PRICE_INPUT": "-3"}).match == "fallback"
-    assert resolve_pricing("m", env={"MINI_CLAUDE_PRICE_OUTPUT": "abc"}).match == "fallback"
+    assert resolve_pricing("m", env={"DORO_PRICE_INPUT": "-3"}).match == "fallback"
+    assert resolve_pricing("m", env={"DORO_PRICE_OUTPUT": "abc"}).match == "fallback"
 
 
 # ─── compute_cost ───────────────────────────────────────────

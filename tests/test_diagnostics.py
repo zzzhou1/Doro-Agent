@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from mini_claude.agent import Agent, _openai_reasoning_tokens
-from mini_claude.diagnostics import (
+from doro.agent import Agent, _openai_reasoning_tokens
+from doro.diagnostics import (
     build_config_report,
     build_doctor_report,
     mask_secret,
@@ -20,7 +20,7 @@ SECRET = "sk-supersecret-value-1234567890"
 
 
 def _agent(**kwargs) -> Agent:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         return Agent(
             backend="openai",
             api_key=SECRET,
@@ -34,10 +34,10 @@ def _isolate_mcp_config(monkeypatch, tmp_path) -> None:
     """Point both config readers at a directory with no config files."""
     empty = [tmp_path / ".mcp.json"]
     monkeypatch.setattr(
-        "mini_claude.mcp_client.config_search_paths", lambda cwd=None: list(empty)
+        "doro.mcp_client.config_search_paths", lambda cwd=None: list(empty)
     )
     monkeypatch.setattr(
-        "mini_claude.diagnostics.config_search_paths", lambda cwd=None: list(empty)
+        "doro.diagnostics.config_search_paths", lambda cwd=None: list(empty)
     )
 
 
@@ -108,7 +108,7 @@ def _status_of(checks, label: str) -> str:
 
 def test_doctor_fails_without_an_api_key(monkeypatch, tmp_path) -> None:
     _isolate_mcp_config(monkeypatch, tmp_path)
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(backend="openai", api_key=None)
 
     checks = run_checks(agent)

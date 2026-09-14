@@ -15,8 +15,8 @@ import os
 from argparse import Namespace
 from unittest.mock import patch
 
-from mini_claude.__main__ import _resolve_model
-from mini_claude.agent import (
+from doro.__main__ import _resolve_model
+from doro.agent import (
     DEFAULT_MODELS,
     Agent,
     default_model_for,
@@ -39,7 +39,7 @@ def _model_env(**overrides: str):
     env = {
         "ANTHROPIC_MODEL": "",
         "OPENAI_MODEL": "",
-        "MINI_CLAUDE_CONTEXT_WINDOW": "",
+        "DORO_CONTEXT_WINDOW": "",
         "ANTHROPIC_API_KEY": "test-key",
         "OPENAI_API_KEY": "test-key",
     }
@@ -69,8 +69,8 @@ def test_explicit_override_beats_the_backend_env_var() -> None:
 
 
 def test_the_removed_global_env_var_no_longer_does_anything() -> None:
-    """Regression: MINI_CLAUDE_MODEL used to carry a name across backends."""
-    stale = {"MINI_CLAUDE_MODEL": "gpt-5.6-sol"}
+    """Regression: DORO_MODEL used to carry a name across backends."""
+    stale = {"DORO_MODEL": "gpt-5.6-sol"}
     with patch.dict(os.environ, stale, clear=True):
         assert resolve_default_model("anthropic") == "claude-opus-5"
         assert _resolve_model(_args(), "anthropic") == (
@@ -88,10 +88,10 @@ def test_blank_env_values_are_ignored() -> None:
 
 
 def test_cli_precedence() -> None:
-    with patch.dict(os.environ, {"MINI_CLAUDE_MODEL": "global-model"}, clear=True):
+    with patch.dict(os.environ, {"DORO_MODEL": "global-model"}, clear=True):
         assert _resolve_model(_args("cli-model"), "openai") == ("cli-model", "--model")
     # The removed global variable must not outrank the per-backend one.
-    both = {"MINI_CLAUDE_MODEL": "global-model", "OPENAI_MODEL": "backend-model"}
+    both = {"DORO_MODEL": "global-model", "OPENAI_MODEL": "backend-model"}
     with patch.dict(os.environ, both, clear=True):
         assert _resolve_model(_args(), "openai") == ("backend-model", "OPENAI_MODEL")
     with patch.dict(os.environ, {"OPENAI_MODEL": "backend-model"}, clear=True):
@@ -135,14 +135,14 @@ def test_context_window_is_shared_by_every_model() -> None:
 
 
 def test_context_window_can_be_overridden_from_the_environment() -> None:
-    with _model_env(MINI_CLAUDE_CONTEXT_WINDOW="100000"):
+    with _model_env(DORO_CONTEXT_WINDOW="100000"):
         assert Agent(backend="anthropic").context_window == 100000
 
 
 def test_a_malformed_context_window_override_falls_back_to_the_default() -> None:
     """A typo in .env must not stop the CLI from starting."""
     for bad in ("abc", "0", "-5"):
-        with _model_env(MINI_CLAUDE_CONTEXT_WINDOW=bad):
+        with _model_env(DORO_CONTEXT_WINDOW=bad):
             assert Agent(backend="anthropic").context_window == 272000
 
 

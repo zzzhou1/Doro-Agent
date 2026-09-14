@@ -164,7 +164,7 @@ DEFAULT_MODELS: dict[str, str] = {
 }
 
 # Per-backend override env var, consulted by ``resolve_default_model``.
-# Deliberately per-backend only: the global ``MINI_CLAUDE_MODEL`` override was
+# Deliberately per-backend only: the global ``DORO_MODEL`` override was
 # removed, because a model name written while one provider was active leaked
 # silently into the other backend.
 BACKEND_MODEL_ENV: dict[str, str] = {
@@ -200,12 +200,12 @@ DEFAULT_CONTEXT_WINDOW = 272_000
 
 
 def _resolve_context_window_override() -> int | None:
-    """``MINI_CLAUDE_CONTEXT_WINDOW`` as a positive int, else ``None``.
+    """``DORO_CONTEXT_WINDOW`` as a positive int, else ``None``.
 
     A malformed value is ignored rather than fatal: a typo in `.env` must not
     stop the CLI from starting, and the default is always usable.
     """
-    raw = os.environ.get("MINI_CLAUDE_CONTEXT_WINDOW", "").strip()
+    raw = os.environ.get("DORO_CONTEXT_WINDOW", "").strip()
     if not raw:
         return None
     try:
@@ -853,7 +853,7 @@ class Agent:
         if resolution.estimated:
             lines.append(
                 "          estimated — no built-in price; override via "
-                "MINI_CLAUDE_PRICES in .env"
+                "DORO_PRICES in .env"
             )
         lines.append("")
         lines.append(
@@ -1275,7 +1275,7 @@ class Agent:
         THRESHOLD = 30 * 1024  # 30 KB
         if len(result.encode()) <= THRESHOLD:
             return result
-        d = Path.home() / ".mini-claude" / "tool-results"
+        d = Path.home() / ".doro" / "tool-results"
         d.mkdir(parents=True, exist_ok=True)
         filename = f"{int(time.time() * 1000)}-{tool_name}.txt"
         filepath = d / filename

@@ -209,7 +209,7 @@ def handle(request: dict, service: AdminService) -> dict | None:
         result = {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "mini-claude-phm-admin", "version": "0.2.0"},
+            "serverInfo": {"name": "doro-phm-admin", "version": "0.2.0"},
         }
     elif method == "tools/list":
         result = {"tools": TOOLS}

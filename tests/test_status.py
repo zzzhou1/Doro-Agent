@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from prompt_toolkit.utils import get_cwidth
 
-from mini_claude.status import (
+from doro.status import (
     format_status_lines,
     format_status_toolbar,
     format_token_limit,
@@ -101,7 +101,7 @@ def test_prompt_toolbar_is_single_line_and_keeps_required_fields() -> None:
 def test_prompt_toolbar_auto_width_reserves_the_terminal_final_column(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("mini_claude.status.terminal_width", lambda: 100)
+    monkeypatch.setattr("doro.status.terminal_width", lambda: 100)
 
     line = format_status_toolbar(_snapshot())
 

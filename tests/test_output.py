@@ -1,12 +1,12 @@
-"""Tests for the unified output coordinator (mini_claude.output)."""
+"""Tests for the unified output coordinator (doro.output)."""
 
 from __future__ import annotations
 
 import threading
 from unittest.mock import Mock
 
-import mini_claude.ui as ui
-from mini_claude.output import INFO, WARNING, OutputCoordinator, OutputEvent
+import doro.ui as ui
+from doro.output import INFO, WARNING, OutputCoordinator, OutputEvent
 
 
 def test_emit_dispatches_to_registered_renderer_in_order() -> None:
@@ -92,7 +92,7 @@ def test_file_change_result_preserves_bracket_text(monkeypatch) -> None:
 
 def test_public_api_routes_every_kind_through_the_renderer() -> None:
     """Every ui.print_* wrapper must emit an event the registry handles."""
-    from mini_claude import output
+    from doro import output
 
     for kind in (
         output.ASSISTANT_DELTA,

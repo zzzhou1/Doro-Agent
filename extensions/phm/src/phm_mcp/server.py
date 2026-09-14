@@ -157,7 +157,7 @@ def handle(request: dict, service: InferenceService) -> dict | None:
         result = {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "mini-claude-phm", "version": "0.2.0"},
+            "serverInfo": {"name": "doro-phm", "version": "0.2.0"},
         }
     elif method == "tools/list":
         result = {"tools": TOOLS}

@@ -11,7 +11,7 @@ from typing import Any
 
 from .output import emit_warning
 
-SESSION_DIR = Path.home() / ".mini-claude" / "sessions"
+SESSION_DIR = Path.home() / ".doro" / "sessions"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 

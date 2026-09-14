@@ -5,11 +5,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mini_claude.agent import Agent
+from doro.agent import Agent
 
 
 def test_openai_backend_does_not_require_custom_base_url() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI") as client:
+    with patch("doro.agent.openai.AsyncOpenAI") as client:
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -21,7 +21,7 @@ def test_openai_backend_does_not_require_custom_base_url() -> None:
 
 
 def test_anthropic_backend_preserves_custom_base_url() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic") as client:
+    with patch("doro.agent.anthropic.AsyncAnthropic") as client:
         agent = Agent(
             backend="anthropic",
             api_key="test-key",
@@ -42,7 +42,7 @@ def test_invalid_backend_is_rejected() -> None:
 
 
 def test_switch_model_keeps_backend_and_refreshes_model_state() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             model="gpt-4o",
@@ -63,7 +63,7 @@ def test_switch_model_keeps_backend_and_refreshes_model_state() -> None:
 
 @pytest.mark.asyncio
 async def test_openai_model_list_includes_current_model() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             model="current-model",
@@ -82,7 +82,7 @@ async def test_openai_model_list_includes_current_model() -> None:
 
 @pytest.mark.asyncio
 async def test_anthropic_model_list_uses_bounded_request() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+    with patch("doro.agent.anthropic.AsyncAnthropic"):
         agent = Agent(
             backend="anthropic",
             model="claude-current",
@@ -100,7 +100,7 @@ async def test_anthropic_model_list_uses_bounded_request() -> None:
 
 @pytest.mark.asyncio
 async def test_model_list_rejects_empty_provider_response() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -115,7 +115,7 @@ async def test_model_list_rejects_empty_provider_response() -> None:
 
 
 def test_restore_session_restores_model_id_and_history() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             model="gpt-4o",
@@ -148,7 +148,7 @@ def test_restore_session_restores_model_id_and_history() -> None:
 
 
 def test_restore_session_rejects_cross_backend_history() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -163,7 +163,7 @@ def test_restore_session_rejects_cross_backend_history() -> None:
 
 
 def test_auto_save_records_resumable_session_metadata() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             model="gpt-4o-mini",
@@ -173,7 +173,7 @@ def test_auto_save_records_resumable_session_metadata() -> None:
     agent._openai_messages.append({"role": "user", "content": "hello"})
     agent._last_user_preview = "hello"
 
-    with patch("mini_claude.agent.save_session") as save:
+    with patch("doro.agent.save_session") as save:
         agent._auto_save()
 
     saved_id, payload = save.call_args.args
@@ -187,7 +187,7 @@ def test_auto_save_records_resumable_session_metadata() -> None:
 
 
 def test_default_effort_and_legacy_thinking_alias() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         default_agent = Agent(backend="openai", api_key="test-key")
         thinking_agent = Agent(backend="openai", api_key="test-key", thinking=True)
 
@@ -197,7 +197,7 @@ def test_default_effort_and_legacy_thinking_alias() -> None:
 
 
 def test_openai_effort_wire_mapping_and_reset() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -213,7 +213,7 @@ def test_openai_effort_wire_mapping_and_reset() -> None:
 
 
 def test_anthropic_adaptive_effort_mapping() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+    with patch("doro.agent.anthropic.AsyncAnthropic"):
         agent = Agent(
             backend="anthropic",
             model="claude-opus-5",
@@ -232,7 +232,7 @@ def test_anthropic_adaptive_effort_mapping() -> None:
 
 
 def test_legacy_anthropic_model_keeps_fixed_thinking_budget() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+    with patch("doro.agent.anthropic.AsyncAnthropic"):
         agent = Agent(
             backend="anthropic",
             model="claude-sonnet-4-20250514",
@@ -250,7 +250,7 @@ def test_legacy_anthropic_model_keeps_fixed_thinking_budget() -> None:
 
 
 def test_anthropic_rejects_known_unsupported_effort_without_downgrade() -> None:
-    with patch("mini_claude.agent.anthropic.AsyncAnthropic"):
+    with patch("doro.agent.anthropic.AsyncAnthropic"):
         with pytest.raises(ValueError, match="minimal"):
             Agent(
                 backend="anthropic",
@@ -272,7 +272,7 @@ def test_anthropic_rejects_known_unsupported_effort_without_downgrade() -> None:
 
 
 def test_explicit_effort_beats_restored_session_effort() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -301,7 +301,7 @@ async def test_openai_stream_request_includes_reasoning_effort() -> None:
         async def __anext__(self):
             raise StopAsyncIteration
 
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",
@@ -318,7 +318,7 @@ async def test_openai_stream_request_includes_reasoning_effort() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_initialization_retries_and_deduplicates_tools() -> None:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         agent = Agent(
             backend="openai",
             api_key="test-key",

@@ -1,4 +1,4 @@
-"""Tests for the unified command registry (mini_claude.commands).
+"""Tests for the unified command registry (doro.commands).
 
 The registry exists because /effort once shipped in dispatch while missing
 from the welcome banner — three hand-maintained lists had drifted apart.
@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mini_claude.__main__ import _REPL_HANDLERS, run_repl, validate_handlers
-from mini_claude.commands import (
+from doro.__main__ import _REPL_HANDLERS, run_repl, validate_handlers
+from doro.commands import (
     COMMAND_REGISTRY,
     SKILL_HELP_ENTRY,
     completion_map,
@@ -79,8 +79,8 @@ async def test_dispatch_runs_registered_handler() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/clear", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -94,9 +94,9 @@ async def test_dispatch_passes_args_to_handler() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/effort high", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.print_info"),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.print_info"),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -112,9 +112,9 @@ async def test_args_on_no_arg_command_fall_through_to_chat() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/clear please", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.get_skill_by_name", return_value=None),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.get_skill_by_name", return_value=None),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -130,9 +130,9 @@ async def test_unknown_command_falls_through_to_chat() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/nope", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.get_skill_by_name", return_value=None),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.get_skill_by_name", return_value=None),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 

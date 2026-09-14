@@ -3,8 +3,8 @@
 这是 Doro 统一智能体中的工业垂直能力模块，不是另一个独立 Agent。它使用 NASA
 C-MAPSS FD001 仿真数据训练 LSTM 和轻量 Transformer，预测航空发动机剩余使用
 寿命（RUL），并通过 Doro 共用的 Skill、MCP、权限和工具编排系统完成数据质检、
-推理、异步训练、候选模型发布与回滚。当前兼容 CLI 仍叫 `mini-claude`，PHM 独立
-包仍叫 `mini-claude-phm`。
+推理、异步训练、候选模型发布与回滚。统一 Agent CLI 为 `doro`，PHM 独立发行包为
+`doro-phm`。
 
 本 README 重点说明如何在 Agent 对话中按需提交训练和测试。更完整的技术说明见
 [FD001 PHM 技术指南](docs/FD001_PHM_GUIDE.md)，统一项目经历见
@@ -62,10 +62,11 @@ phm 只读 MCP → 数据质检、RUL 预测、模型比较
 
 ## 三、首次安装与数据准备
 
-所有命令默认从仓库根目录执行：
+所有命令默认从 Doro 仓库根目录执行。请先按实际位置设置一次：
 
-```text
-F:\LLM\mini-cc\claude-code-from-scratch-main
+```powershell
+$DORO_ROOT = "F:\path\to\doro"
+Set-Location -LiteralPath $DORO_ROOT
 ```
 
 安装独立 PHM 环境：
@@ -131,7 +132,7 @@ Test-Path extensions/phm/data/processed/fd001.npz
 - 训练不在 MCP 调用内部执行，所以管理 MCP 的 `toolTimeout` 不需要设置成训练时长。
 
 `cwd` 是 MCP 子进程的工作目录。相对值按配置所属项目解析，因此这里写 `.` 后，
-即使从仓库之外启动 `mini-claude`，`extensions/phm` 仍会按 Doro 仓库根目录定位。
+即使从仓库之外启动 `doro`，`extensions/phm` 仍会按 Doro 仓库根目录定位。
 不要把仓库的 `F:\\...` 绝对路径写进可共享配置；只有临时排错时才建议使用绝对路径。
 
 修改 `.mcp.json` 后，如果 Agent 已经运行，执行：
@@ -167,7 +168,7 @@ uv run --project extensions/phm phm-worker
 从仓库根目录启动：
 
 ```powershell
-uv run mini-claude
+uv run doro
 ```
 
 进入交互界面后先检查技能：
@@ -557,7 +558,7 @@ uv run pytest -q
 ```text
 PHM tests: 32 passed
 Main project tests: 232 passed
-Package build: mini-claude-phm 0.2.0 succeeded
+Package build: doro-phm 0.2.0 succeeded
 ```
 
 ## 十一、当前 v1 模型结果
@@ -577,12 +578,12 @@ Package build: mini-claude-phm 0.2.0 succeeded
 新版 Doro 会从安装根目录发现内置 Skill，不要求当前目录是源码仓库。先确认文件存在：
 
 ```powershell
-Test-Path F:\LLM\mini-cc\claude-code-from-scratch-main\.claude\skills\phm-training\SKILL.md
+Test-Path (Join-Path $DORO_ROOT ".claude\skills\phm-training\SKILL.md")
 ```
 
-再退出并重新启动 `mini-claude`，然后执行 `/skills`；技能列表应包含
+再退出并重新启动 `doro`，然后执行 `/skills`；技能列表应包含
 `/phm-training (bundled)`。Skill 在进程内有缓存，升级前已经运行的旧进程必须重启。
-如果仍然看不到，确认当前 `mini-claude` 是从这份源码进行的可编辑安装；普通 wheel
+如果仍然看不到，确认当前 `doro` 是从这份源码进行的可编辑安装；普通 wheel
 安装需要在构建包中显式包含 `.claude/skills` 资源。
 
 ### `/mcp tools` 没有 `phm-admin`

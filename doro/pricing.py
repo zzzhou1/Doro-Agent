@@ -16,11 +16,11 @@ Two rules keep this honest:
 
 Prices can be overridden from ``.env``:
 
-    MINI_CLAUDE_PRICES={"gateway-model": {"input": 2, "output": 8}}
-    MINI_CLAUDE_PRICE_INPUT=2          # per-million USD, applies to every model
-    MINI_CLAUDE_PRICE_OUTPUT=8
-    MINI_CLAUDE_PRICE_CACHE_WRITE=2.5
-    MINI_CLAUDE_PRICE_CACHE_READ=0.4
+    DORO_PRICES={"gateway-model": {"input": 2, "output": 8}}
+    DORO_PRICE_INPUT=2          # per-million USD, applies to every model
+    DORO_PRICE_OUTPUT=8
+    DORO_PRICE_CACHE_WRITE=2.5
+    DORO_PRICE_CACHE_READ=0.4
 """
 
 from __future__ import annotations
@@ -81,12 +81,12 @@ PRICING_TABLE: dict[str, ModelPricing] = {
     "gpt-4.1": ModelPricing(2.00, 8.00, 2.00, 0.50),
 }
 
-PRICES_JSON_ENV = "MINI_CLAUDE_PRICES"
+PRICES_JSON_ENV = "DORO_PRICES"
 PRICE_FIELD_ENV: dict[str, str] = {
-    "input": "MINI_CLAUDE_PRICE_INPUT",
-    "output": "MINI_CLAUDE_PRICE_OUTPUT",
-    "cache_write": "MINI_CLAUDE_PRICE_CACHE_WRITE",
-    "cache_read": "MINI_CLAUDE_PRICE_CACHE_READ",
+    "input": "DORO_PRICE_INPUT",
+    "output": "DORO_PRICE_OUTPUT",
+    "cache_write": "DORO_PRICE_CACHE_WRITE",
+    "cache_read": "DORO_PRICE_CACHE_READ",
 }
 
 
@@ -150,7 +150,7 @@ def _positive_float(value: object) -> float | None:
 def _env_model_overrides(
     model: str, env: Mapping[str, str]
 ) -> tuple[dict[str, float], str]:
-    """Per-model overrides from ``MINI_CLAUDE_PRICES`` (a JSON object)."""
+    """Per-model overrides from ``DORO_PRICES`` (a JSON object)."""
     raw = env.get(PRICES_JSON_ENV)
     if not raw:
         return {}, ""
@@ -174,13 +174,13 @@ def _env_model_overrides(
 def _env_field_overrides(
     env: Mapping[str, str]
 ) -> tuple[dict[str, float], str]:
-    """Global per-field overrides from ``MINI_CLAUDE_PRICE_*``."""
+    """Global per-field overrides from ``DORO_PRICE_*``."""
     values: dict[str, float] = {}
     for field, name in PRICE_FIELD_ENV.items():
         number = _positive_float(env.get(name))
         if number is not None:
             values[field] = number
-    return values, "MINI_CLAUDE_PRICE_*"
+    return values, "DORO_PRICE_*"
 
 
 def resolve_pricing(

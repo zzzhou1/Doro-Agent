@@ -10,7 +10,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
-from mini_claude.interactive import (
+from doro.interactive import (
     InlineSelector,
     SlashCommandCompleter,
     build_status_toolbar,

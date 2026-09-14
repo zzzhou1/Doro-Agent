@@ -19,7 +19,7 @@ def test_server_lists_six_read_only_tools() -> None:
 def test_initialize_and_tool_list_protocol(tmp_path: Path) -> None:
     service = InferenceService(tmp_path / "data", tmp_path / "artifacts")
     initialized = handle({"id": 1, "method": "initialize"}, service)
-    assert initialized["result"]["serverInfo"]["name"] == "mini-claude-phm"
+    assert initialized["result"]["serverInfo"]["name"] == "doro-phm"
     listed = handle({"id": 2, "method": "tools/list"}, service)
     assert len(listed["result"]["tools"]) == 6
 

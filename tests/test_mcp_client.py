@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import mini_claude.mcp_client as mcp_client
-from mini_claude.mcp_client import McpConnection, McpError, McpManager, McpTimeoutError
+import doro.mcp_client as mcp_client
+from doro.mcp_client import McpConnection, McpError, McpManager, McpTimeoutError
 
 SERVER = Path(__file__).parent / "fixtures" / "mcp_server.py"
 

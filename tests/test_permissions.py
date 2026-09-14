@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from mini_claude.tools import check_permission
+from doro.tools import check_permission
 
 
 def _read_only(names: set[str]) -> Callable[[str], bool]:

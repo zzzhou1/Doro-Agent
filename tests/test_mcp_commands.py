@@ -12,14 +12,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mini_claude import __main__ as main
-from mini_claude.agent import Agent
-from mini_claude.mcp_client import McpServerStatus
-from mini_claude.status import format_status_toolbar
+from doro import __main__ as main
+from doro.agent import Agent
+from doro.mcp_client import McpServerStatus
+from doro.status import format_status_toolbar
 
 
 def _agent() -> Agent:
-    with patch("mini_claude.agent.openai.AsyncOpenAI"):
+    with patch("doro.agent.openai.AsyncOpenAI"):
         return Agent(
             backend="openai",
             api_key="sk-test-key-1234567890",
@@ -31,10 +31,10 @@ def _agent() -> Agent:
 def _isolate_mcp_config(monkeypatch, tmp_path) -> None:
     empty = [tmp_path / ".mcp.json"]
     monkeypatch.setattr(
-        "mini_claude.mcp_client.config_search_paths", lambda cwd=None: list(empty)
+        "doro.mcp_client.config_search_paths", lambda cwd=None: list(empty)
     )
     monkeypatch.setattr(
-        "mini_claude.diagnostics.config_search_paths", lambda cwd=None: list(empty)
+        "doro.diagnostics.config_search_paths", lambda cwd=None: list(empty)
     )
 
 
@@ -50,8 +50,8 @@ async def _run(monkeypatch, agent: Agent, lines: list[str], panels: list, errors
     prompt_session = Mock()
     prompt_session.prompt_async = AsyncMock(side_effect=lines)
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
     ):
         await main.run_repl(agent, prompt_session=prompt_session)
 

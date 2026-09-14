@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from mini_claude.subagent import _load_agents_from_dir
+from doro.subagent import _load_agents_from_dir
 
 
 def test_a_broken_definition_is_reported(tmp_path: Path) -> None:
@@ -18,7 +18,7 @@ def test_a_broken_definition_is_reported(tmp_path: Path) -> None:
     (tmp_path / "broken.md").mkdir()
     agents: dict[str, dict] = {}
 
-    with patch("mini_claude.subagent.emit_warning") as warned:
+    with patch("doro.subagent.emit_warning") as warned:
         _load_agents_from_dir(tmp_path, agents)
 
     assert agents == {}
@@ -33,7 +33,7 @@ def test_a_valid_definition_loads_quietly(tmp_path: Path) -> None:
     )
     agents: dict[str, dict] = {}
 
-    with patch("mini_claude.subagent.emit_warning") as warned:
+    with patch("doro.subagent.emit_warning") as warned:
         _load_agents_from_dir(tmp_path, agents)
 
     warned.assert_not_called()

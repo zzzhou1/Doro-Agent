@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mini-claude-phm"
+name = "doro-phm"
 version = "0.2.0"
 description = "NASA C-MAPSS RUL models with inference and training-control MCP servers"
 requires-python = ">=3.11"

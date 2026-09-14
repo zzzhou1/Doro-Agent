@@ -43,7 +43,7 @@ from .ui import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="mini-claude",
+        prog="doro",
         description="Doro — a local Coding + PHM agent",
         add_help=False,
     )
@@ -93,7 +93,7 @@ def _dotenv_candidates(env_file: str | None = None) -> list[Path]:
     paths = [
         Path.cwd() / ".env",
         Path(__file__).resolve().parent.parent / ".env",
-        Path.home() / ".mini-claude" / ".env",
+        Path.home() / ".doro" / ".env",
     ]
     seen: set[str] = set()
     unique: list[Path] = []
@@ -110,7 +110,7 @@ def _load_project_env(directory: Path | None = None, env_file: str | None = None
 
     Passing ``directory`` restricts the search to that directory's .env.
     Otherwise ``--env-file`` or the working directory takes priority, with
-    fallbacks to the package source tree and ``~/.mini-claude/.env`` so the
+    fallbacks to the package source tree and ``~/.doro/.env`` so the
     installed command works from any working directory.
     """
     if directory is not None:
@@ -153,7 +153,7 @@ def _resolve_model(args: argparse.Namespace, backend: str) -> tuple[str, str]:
     hardcoded Claude id, which also silently rewrote an *explicit*
     ``--model claude-...`` on the OpenAI backend.
 
-    ``MINI_CLAUDE_MODEL`` used to sit in this chain and applied to *every*
+    ``DORO_MODEL`` used to sit in this chain and applied to *every*
     backend, so a name meant for one provider silently travelled to the other
     (``gpt-5.6-sol`` sent to Anthropic, ``claude-opus-5`` to an OpenAI gateway).
     It was removed — set the per-backend variable instead.
@@ -171,11 +171,11 @@ def _configured_reasoning_effort(backend: str) -> tuple[str, str]:
     """Resolve the reusable default below session and explicit CLI choices."""
     backend_env_name = BACKEND_REASONING_ENV[backend]
     backend_env = os.environ.get(backend_env_name, "").strip()
-    global_env = os.environ.get("MINI_CLAUDE_EFFORT", "").strip()
+    global_env = os.environ.get("DORO_EFFORT", "").strip()
     if backend_env:
         return normalize_reasoning_effort(backend_env), backend_env_name
     if global_env:
-        return normalize_reasoning_effort(global_env), "MINI_CLAUDE_EFFORT"
+        return normalize_reasoning_effort(global_env), "DORO_EFFORT"
     return DEFAULT_REASONING_EFFORT, "built-in default"
 
 
@@ -750,7 +750,7 @@ def _force_utf8_stdio() -> None:
 
     On Windows Python only uses UTF-8 for the *console*; as soon as stdout is a
     pipe or a file it falls back to the locale code page (cp936 on a Chinese
-    system), so `mini-claude "..." > log.txt` turns every non-ASCII character
+    system), so `doro "..." > log.txt` turns every non-ASCII character
     into mojibake. The console path is already UTF-8, so reconfiguring is a
     no-op there and only fixes the redirected case.
     """
@@ -771,7 +771,7 @@ def main() -> None:
 
     if args.help:
         print(f"""
-Usage: mini-claude [options] [prompt]
+Usage: doro [options] [prompt]
 
 Options:
   --yolo, -y          Skip all confirmation prompts (bypassPermissions mode)
@@ -795,13 +795,13 @@ REPL commands:
 {format_help_section()}
 
 Examples:
-  mini-claude "fix the bug in app.py"
-  mini-claude --yolo "run all tests and fix failures"
-  mini-claude --plan "how would you refactor this?"
-  mini-claude --max-cost 0.50 --max-turns 20 "implement feature X"
-  OPENAI_API_KEY=sk-xxx mini-claude --api-base https://aihubmix.com/v1 --model gpt-5.6-sol "hello"
-  mini-claude --resume
-  mini-claude  # starts interactive REPL
+  doro "fix the bug in app.py"
+  doro --yolo "run all tests and fix failures"
+  doro --plan "how would you refactor this?"
+  doro --max-cost 0.50 --max-turns 20 "implement feature X"
+  OPENAI_API_KEY=sk-xxx doro --api-base https://aihubmix.com/v1 --model gpt-5.6-sol "hello"
+  doro --resume
+  doro  # starts interactive REPL
 """)
         sys.exit(0)
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mini_claude import skills
+from doro import skills
 
 
 @pytest.fixture(autouse=True)

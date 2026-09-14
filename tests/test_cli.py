@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from mini_claude.__main__ import (
+from doro.__main__ import (
     _force_utf8_stdio,
     _load_project_env,
     _resolve_api_config,
@@ -46,7 +46,7 @@ def test_redirected_output_is_utf8_without_utf8_mode(tmp_path) -> None:
     env.pop("PYTHONUTF8", None)
     env.pop("PYTHONIOENCODING", None)
     code = (
-        "from mini_claude.__main__ import _force_utf8_stdio;"
+        "from doro.__main__ import _force_utf8_stdio;"
         "_force_utf8_stdio();"
         "import sys; sys.stdout.write('你好')"
     )
@@ -63,7 +63,7 @@ def test_redirected_output_is_utf8_without_utf8_mode(tmp_path) -> None:
 def test_console_script_metadata_matches_documentation() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert metadata["project"]["scripts"] == {
-        "mini-claude": "mini_claude.__main__:main"
+        "doro": "doro.__main__:main"
     }
     assert metadata["project"]["requires-python"] == ">=3.11"
 
@@ -78,7 +78,7 @@ def test_module_help_runs_without_api_key() -> None:
     ):
         env.pop(name, None)
     result = subprocess.run(
-        [sys.executable, "-m", "mini_claude", "--help"],
+        [sys.executable, "-m", "doro", "--help"],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -86,7 +86,7 @@ def test_module_help_runs_without_api_key() -> None:
         timeout=20,
     )
     assert result.returncode == 0, result.stderr
-    assert "Usage: mini-claude" in result.stdout
+    assert "Usage: doro" in result.stdout
 
 
 def test_openai_key_uses_official_default_endpoint() -> None:
@@ -134,21 +134,21 @@ def test_project_dotenv_loads_without_overriding_shell(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         "OPENAI_API_KEY=from-dotenv\n"
         "OPENAI_BASE_URL=https://dotenv.example/v1\n"
-        "MINI_CLAUDE_MODEL=dotenv-model\n",
+        "DORO_MODEL=dotenv-model\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"OPENAI_API_KEY": "from-shell"}, clear=True):
         assert _load_project_env(tmp_path) is True
         assert os.environ["OPENAI_API_KEY"] == "from-shell"
         assert os.environ["OPENAI_BASE_URL"] == "https://dotenv.example/v1"
-        assert os.environ["MINI_CLAUDE_MODEL"] == "dotenv-model"
+        assert os.environ["DORO_MODEL"] == "dotenv-model"
 
 
 def _fake_package(tmp_path: Path, dotenv: str | None) -> Path:
     """Build a throwaway source tree and return its fake __main__.py path."""
     package_root = tmp_path / "proj"
-    (package_root / "mini_claude").mkdir(parents=True)
-    fake_main = package_root / "mini_claude" / "__main__.py"
+    (package_root / "doro").mkdir(parents=True)
+    fake_main = package_root / "doro" / "__main__.py"
     fake_main.write_text("", encoding="utf-8")
     if dotenv is not None:
         (package_root / ".env").write_text(dotenv, encoding="utf-8")
@@ -158,7 +158,7 @@ def _fake_package(tmp_path: Path, dotenv: str | None) -> Path:
 def test_dotenv_falls_back_to_package_source_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mini_claude.__main__ as cli
+    import doro.__main__ as cli
 
     fake_main = _fake_package(tmp_path, "ANTHROPIC_API_KEY=from-source-tree\n")
     (tmp_path / "work").mkdir()
@@ -174,12 +174,12 @@ def test_dotenv_falls_back_to_package_source_tree(
 def test_dotenv_falls_back_to_user_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mini_claude.__main__ as cli
+    import doro.__main__ as cli
 
     fake_main = _fake_package(tmp_path, None)
     home = tmp_path / "home"
-    (home / ".mini-claude").mkdir(parents=True)
-    (home / ".mini-claude" / ".env").write_text(
+    (home / ".doro").mkdir(parents=True)
+    (home / ".doro" / ".env").write_text(
         "ANTHROPIC_API_KEY=from-user-dir\n", encoding="utf-8"
     )
     (tmp_path / "work").mkdir()
@@ -195,7 +195,7 @@ def test_dotenv_falls_back_to_user_directory(
 def test_working_directory_dotenv_wins_over_fallbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mini_claude.__main__ as cli
+    import doro.__main__ as cli
 
     fake_main = _fake_package(tmp_path, "ANTHROPIC_API_KEY=from-source-tree\n")
     work = tmp_path / "work"
@@ -249,7 +249,7 @@ def _effort_args(effort: str | None = None, thinking: bool = False) -> Namespace
 def test_effort_cli_and_environment_precedence() -> None:
     env = {
         "OPENAI_REASONING_EFFORT": "low",
-        "MINI_CLAUDE_EFFORT": "high",
+        "DORO_EFFORT": "high",
     }
     with patch.dict(os.environ, env, clear=True):
         assert _resolve_reasoning_effort(_effort_args("xhigh"), "openai") == (
@@ -258,9 +258,9 @@ def test_effort_cli_and_environment_precedence() -> None:
         assert _resolve_reasoning_effort(_effort_args(), "openai") == (
             "low", "OPENAI_REASONING_EFFORT", "low", False
         )
-    with patch.dict(os.environ, {"MINI_CLAUDE_EFFORT": "off"}, clear=True):
+    with patch.dict(os.environ, {"DORO_EFFORT": "off"}, clear=True):
         assert _resolve_reasoning_effort(_effort_args(), "anthropic") == (
-            "off", "MINI_CLAUDE_EFFORT", "off", False
+            "off", "DORO_EFFORT", "off", False
         )
     with patch.dict(os.environ, {}, clear=True):
         assert _resolve_reasoning_effort(_effort_args(thinking=True), "openai") == (
@@ -272,10 +272,10 @@ def test_effort_cli_and_environment_precedence() -> None:
 
 
 def test_effort_parser_rejects_legacy_flag_combined_with_level() -> None:
-    with patch.object(sys, "argv", ["mini-claude", "--effort", "low"]):
+    with patch.object(sys, "argv", ["doro", "--effort", "low"]):
         assert parse_args().effort == "low"
     with (
-        patch.object(sys, "argv", ["mini-claude", "--effort", "low", "--thinking"]),
+        patch.object(sys, "argv", ["doro", "--effort", "low", "--thinking"]),
         pytest.raises(SystemExit),
     ):
         parse_args()
@@ -294,10 +294,10 @@ async def test_repl_effort_selector_changes_level() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/effort", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.print_info"),
-        patch("mini_claude.__main__.prompt_choice", new=AsyncMock(return_value="high")),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.print_info"),
+        patch("doro.__main__.prompt_choice", new=AsyncMock(return_value="high")),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -312,7 +312,7 @@ async def test_repl_effort_default_resets_configuration() -> None:
     prompt_session = Mock()
     prompt_session.prompt_async = AsyncMock(side_effect=["/effort default", "exit"])
 
-    with patch("mini_claude.__main__.signal.signal"), patch("mini_claude.__main__.print_welcome"):
+    with patch("doro.__main__.signal.signal"), patch("doro.__main__.print_welcome"):
         await run_repl(agent, prompt_session=prompt_session)
 
     agent.reset_reasoning_effort.assert_called_once_with()
@@ -331,11 +331,11 @@ async def test_repl_model_selection_switches_by_number(monkeypatch) -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["/model", "exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.print_info"),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.print_info"),
         patch(
-            "mini_claude.__main__.prompt_choice",
+            "doro.__main__.prompt_choice",
             new=AsyncMock(return_value="beta"),
         ),
     ):
@@ -366,12 +366,12 @@ async def test_repl_session_aliases_use_the_same_selector(command: str) -> None:
     choice = AsyncMock(return_value="saved123")
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.print_info"),
-        patch("mini_claude.__main__._sessions_for_agent", return_value=sessions),
-        patch("mini_claude.__main__.prompt_choice", new=choice),
-        patch("mini_claude.__main__._restore_agent_session") as restore,
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.print_info"),
+        patch("doro.__main__._sessions_for_agent", return_value=sessions),
+        patch("doro.__main__.prompt_choice", new=choice),
+        patch("doro.__main__._restore_agent_session") as restore,
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -400,9 +400,9 @@ async def test_repl_patches_stdout_while_prompt_is_active() -> None:
     prompt_session.prompt_async = AsyncMock(side_effect=["exit"])
 
     with (
-        patch("mini_claude.__main__.signal.signal"),
-        patch("mini_claude.__main__.print_welcome"),
-        patch("mini_claude.__main__.patch_stdout", fake_patch_stdout),
+        patch("doro.__main__.signal.signal"),
+        patch("doro.__main__.print_welcome"),
+        patch("doro.__main__.patch_stdout", fake_patch_stdout),
     ):
         await run_repl(agent, prompt_session=prompt_session)
 
@@ -416,14 +416,14 @@ def test_prompt_output_guard_falls_back_without_a_console() -> None:
     stdout must survive instead of crashing the REPL."""
     import contextlib
 
-    from mini_claude.__main__ import _prompt_output_guard
+    from doro.__main__ import _prompt_output_guard
 
     @contextlib.contextmanager
     def broken_patch_stdout():
         raise RuntimeError("no console")
         yield
 
-    with patch("mini_claude.__main__.patch_stdout", broken_patch_stdout):
+    with patch("doro.__main__.patch_stdout", broken_patch_stdout):
         with _prompt_output_guard():
             print("still works")
 
@@ -431,7 +431,7 @@ def test_prompt_output_guard_falls_back_without_a_console() -> None:
 def test_restore_helper_rejects_other_project(tmp_path: Path, monkeypatch) -> None:
     agent = Mock()
     monkeypatch.chdir(tmp_path)
-    with patch("mini_claude.__main__.load_session", return_value={
+    with patch("doro.__main__.load_session", return_value={
         "metadata": {
             "id": "saved123",
             "cwd": str(tmp_path / "another-project"),

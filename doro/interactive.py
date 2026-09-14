@@ -20,7 +20,7 @@ from prompt_toolkit.styles import Style
 from .commands import completion_map
 from .status import format_status_toolbar
 
-INPUT_HISTORY_FILE = Path.home() / ".mini-claude" / "input_history"
+INPUT_HISTORY_FILE = Path.home() / ".doro" / "input_history"
 StatusProvider = Callable[[], Mapping[str, Any]]
 
 

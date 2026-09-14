@@ -8,7 +8,7 @@ from phm_mcp.admin_server import TOOLS, call_tool, handle
 def test_admin_server_lists_training_control_tools(tmp_path: Path) -> None:
     service = AdminService(tmp_path / "data", tmp_path / "artifacts", tmp_path / "runtime")
     initialized = handle({"id": 1, "method": "initialize"}, service)
-    assert initialized["result"]["serverInfo"]["name"] == "mini-claude-phm-admin"
+    assert initialized["result"]["serverInfo"]["name"] == "doro-phm-admin"
     listed = handle({"id": 2, "method": "tools/list"}, service)
     assert len(listed["result"]["tools"]) == 10
     assert {tool["name"] for tool in TOOLS} == {

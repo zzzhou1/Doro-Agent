@@ -4,8 +4,8 @@ Doro 是一个可扩展的本地智能体平台：同一套 Agent 循环、工�
 MCP、会话和上下文系统，既能完成代码搜索、修改、Shell、Git 与测试验证，也能编排
 工业装备数据质检、RUL 推理、异步模型训练、候选发布与回滚。
 
-当前 Python 包和兼容 CLI 仍使用 `mini_claude` / `mini-claude` 名称，不影响以 Doro
-作为统一项目名；后续如需改内部名称，应连同配置目录和历史会话进行兼容迁移。
+`Doro` 是统一产品名；Python 导入包和 CLI 命令均为 `doro`，发行包名为
+`doro-agent`，用户级配置、会话、记忆和工具结果统一保存在 `~/.doro/`。
 
 ## 统一能力总览
 
@@ -48,7 +48,7 @@ Copy-Item .env.example .env
 uv run pytest
 
 # 4. 运行
-uv run mini-claude
+uv run doro
 ```
 
 ## 环境要求
@@ -79,8 +79,8 @@ uv sync --extra test
 该命令会创建 `.venv` 并按 `uv.lock` 安装锁定版本。之后的命令统一加 `uv run` 前缀：
 
 ```powershell
-uv run mini-claude
-uv run python -m mini_claude
+uv run doro
+uv run python -m doro
 ```
 
 ### 方式二：pip
@@ -99,7 +99,7 @@ source .venv/bin/activate
 python -m pip install -e ".[test]"
 ```
 
-安装完成后可使用 `mini-claude`，也可直接使用 `python -m mini_claude`。
+安装完成后可使用 `doro`，也可直接使用 `python -m doro`。
 
 ## 验证安装
 
@@ -107,7 +107,8 @@ python -m pip install -e ".[test]"
 pytest
 ```
 
-全部测试应当通过（当前 111 项）。测试**不需要任何 API Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
+全部测试应当通过（当前主项目 234 项、PHM 扩展 32 项）。测试**不需要任何 API
+Key**，因此可以在配置密钥之前先跑一遍，确认代码本身没问题。
 
 ## 使用 `.env` 配置
 
@@ -135,7 +136,7 @@ ANTHROPIC_MODEL=claude-opus-5
 ANTHROPIC_EFFORT=medium
 ```
 
-**模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型用 `ANTHROPIC_MODEL` / `OPENAI_MODEL`，它们只作用于自己的后端。（早先的 `MINI_CLAUDE_MODEL` 对全部后端生效，会把一个服务商的模型名带到另一个上，**已移除**。）
+**模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型用 `ANTHROPIC_MODEL` / `OPENAI_MODEL`，它们只作用于自己的后端。（早先的 `DORO_MODEL` 对全部后端生效，会把一个服务商的模型名带到另一个上，**已移除**。）
 
 **思考强度也可以不写。** 内置默认是 `medium`，可选 `auto`、`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。各模型支持范围不同：Anthropic 不支持 `minimal`；已知不支持的组合会在本地报错，其余由实际 API 端点校验，不会静默降级。
 
@@ -146,9 +147,9 @@ ANTHROPIC_EFFORT=medium
 1. `--env-file PATH` 指定的文件
 2. 当前工作目录的 `.env`
 3. 本包源码树根目录的 `.env`
-4. `~/.mini-claude/.env`
+4. `~/.doro/.env`
 
-因此，即使在项目目录之外运行 `mini-claude` 也能正确读取配置；想给某个项目单独换一套 Key，在该项目目录放一个 `.env` 即可。
+因此，即使在项目目录之外运行 `doro` 也能正确读取配置；想给某个项目单独换一套 Key，在该项目目录放一个 `.env` 即可。
 
 终端里已设置的环境变量**始终优先于所有 `.env` 文件**。
 
@@ -159,14 +160,14 @@ Anthropic：
 ```powershell
 $env:ANTHROPIC_API_KEY = "your-key"
 # 可选：$env:ANTHROPIC_BASE_URL = "https://your-proxy.example"
-mini-claude "hello"
+doro "hello"
 ```
 
 OpenAI 官方接口：
 
 ```powershell
 $env:OPENAI_API_KEY = "your-key"
-mini-claude --model gpt-5.6-sol "hello"
+doro --model gpt-5.6-sol "hello"
 ```
 
 OpenAI-compatible 接口：
@@ -174,14 +175,14 @@ OpenAI-compatible 接口：
 ```powershell
 $env:OPENAI_API_KEY = "your-key"
 $env:OPENAI_BASE_URL = "https://your-provider.example/v1"
-mini-claude --model your-model "hello"
+doro --model your-model "hello"
 ```
 
 也可以用 `--api-base` 临时覆盖 OpenAI-compatible 地址。
 
 模型解析优先级：`--model` > `ANTHROPIC_MODEL` / `OPENAI_MODEL`（仅该后端）> 该后端的内置默认。启动时首行会打印实际生效的后端与模型，例如：
 
-思考强度解析优先级：REPL `/effort` > 显式 `--effort` / `--thinking` > 恢复会话中保存的值 > `OPENAI_REASONING_EFFORT` / `ANTHROPIC_EFFORT` > `MINI_CLAUDE_EFFORT` > 内置 `medium`。`/effort default` 可重置到环境变量或内置默认。
+思考强度解析优先级：REPL `/effort` > 显式 `--effort` / `--thinking` > 恢复会话中保存的值 > `OPENAI_REASONING_EFFORT` / `ANTHROPIC_EFFORT` > `DORO_EFFORT` > 内置 `medium`。`/effort default` 可重置到环境变量或内置默认。
 
 ```text
 ℹ Backend: openai | model: gpt-5.6-sol (default for openai) | effort: medium (built-in default)
@@ -239,7 +240,7 @@ mini-claude --model your-model "hello"
 
 这个数同时决定自动压缩何时触发，算错会导致长对话撞上下文上限。费用估算按缓存读的折扣折算：Anthropic 0.1x、OpenAI 0.5x（缓存写 1.25x，仅 Anthropic 计费），并且**按模型取价**。
 
-上下文窗口**所有模型共用一个默认值 272,000**，不按模型名查表。原因：能出现在这个位置的名字（`gpt-5.6-sol`、`claude-opus-5`）多半是网关别名，真实上限无从确证，而按名字精确匹配只会让带日期后缀或改过名的别名静默落到兜底值 —— 与其给一个看似合理的错数，不如给一个明确的默认。窗口同时决定状态栏的分母和自动压缩的触发点（`(窗口 - 20000) × 85%`），填错会实实在在改变压缩时机。要改就在 `.env` 里设 `MINI_CLAUDE_CONTEXT_WINDOW`，纯数字，非法值忽略并回落默认。
+上下文窗口**所有模型共用一个默认值 272,000**，不按模型名查表。原因：能出现在这个位置的名字（`gpt-5.6-sol`、`claude-opus-5`）多半是网关别名，真实上限无从确证，而按名字精确匹配只会让带日期后缀或改过名的别名静默落到兜底值 —— 与其给一个看似合理的错数，不如给一个明确的默认。窗口同时决定状态栏的分母和自动压缩的触发点（`(窗口 - 20000) × 85%`），填错会实实在在改变压缩时机。要改就在 `.env` 里设 `DORO_CONTEXT_WINDOW`，纯数字，非法值忽略并回落默认。
 
 每轮结束时，**分隔线下面只打印一行**，内容是本轮消耗：
 
@@ -258,19 +259,19 @@ mini-claude --model your-model "hello"
 
 ```bash
 # 按模型（JSON，USD / 百万 token）
-MINI_CLAUDE_PRICES={"gpt-5.6-sol": {"input": 2, "output": 8, "cache_write": 2.5, "cache_read": 0.4}}
+DORO_PRICES={"gpt-5.6-sol": {"input": 2, "output": 8, "cache_write": 2.5, "cache_read": 0.4}}
 # 或对所有模型统一设定
-MINI_CLAUDE_PRICE_INPUT=2
-MINI_CLAUDE_PRICE_OUTPUT=8
-MINI_CLAUDE_PRICE_CACHE_WRITE=2.5
-MINI_CLAUDE_PRICE_CACHE_READ=0.4
+DORO_PRICE_INPUT=2
+DORO_PRICE_OUTPUT=8
+DORO_PRICE_CACHE_WRITE=2.5
+DORO_PRICE_CACHE_READ=0.4
 ```
 
 是否命中缓存由服务端决定，客户端无法保证：同一个请求可能这次命中、下次不命中（经多上游轮询的网关尤其如此），这里只如实显示服务端报回的命中量。没有 `(N cached)` 标记不代表代码有问题，而是这一次没命中。同理，命中量高也不代表真的省钱——它只是后端自报的数字。
 
 标准输出固定按 UTF-8 编码，重定向到文件也是如此，不随系统区域设置（Windows 上默认是 ANSI 代码页，如 cp936）变化。
 
-交互输入支持 `/` 命令自动补全：在行首输入 `/` 会立即显示内置命令和可调用 skill，继续输入可缩小范围，也可按 Tab 补全。主对话提示符支持用上下方向键查看最近输入；历史保存在 `~/.mini-claude/input_history`，重启程序后仍然可用。`/model`、`/session` 和 `/resume` 会直接在输出位置绘制可选列表，用上下方向键移动高亮项、Enter 确认、Esc 取消，不会另外打开侧边候选面板。
+交互输入支持 `/` 命令自动补全：在行首输入 `/` 会立即显示内置命令和可调用 skill，继续输入可缩小范围，也可按 Tab 补全。主对话提示符支持用上下方向键查看最近输入；历史保存在 `~/.doro/input_history`，重启程序后仍然可用。`/model`、`/session` 和 `/resume` 会直接在输出位置绘制可选列表，用上下方向键移动高亮项、Enter 确认、Esc 取消，不会另外打开侧边候选面板。
 交互模式会在终端底部持续显示当前目录、上下文占用/窗口、自动压缩状态、累计估算费用、会话 ID、API 后端、模型和运行模式；配置了 MCP server 时还会显示 `mcp: 已连接/总数`。等待输入时由 Prompt Toolkit 绘制单行底栏；模型流式输出和工具执行时切换为同样的单行 Live 底栏，并主动避开终端最后一列，防止 Windows Terminal 自动换行后留下重绘残影。窄终端会优先保留上下文和模型并自动隐藏次要字段；重定向输出和一次性命令不会绘制状态栏。
 
 恢复会话时会自动恢复该会话保存的模型，并继续使用原会话 ID。当前版本只允许在同一 API 后端内恢复；例如，用 OpenAI 后端启动时不会列出或恢复 Anthropic 会话。会话列表还会按当前工作目录隔离。
@@ -285,7 +286,7 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
 - `.mcp.json`
 
 安装级配置提供 Doro 自带能力，优先级最低；因此即使从其他工作目录运行
-`mini-claude`，仍能发现随 Doro 提供的 Skill 和 MCP。用户级或当前项目的同名 Skill
+`doro`，仍能发现随 Doro 提供的 Skill 和 MCP。用户级或当前项目的同名 Skill
 可以覆盖它。
 
 ### 项目级（相对当前工作目录，`CLAUDE.md` 会向上逐级查找）
@@ -303,13 +304,13 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
 - `~/.claude/agents/*.md`
 - `~/.claude/settings.json`（MCP server 与权限规则）
 - `~/.claude/plans/`
-- `~/.mini-claude/.env`（用户级兜底配置）
+- `~/.doro/.env`（用户级兜底配置）
 
 > **复现提示**：用户级目录会显著影响功能表现。如果本机装过 Claude Code 并配置了 skills 或 MCP，`/skills` 列出的内容与权限行为会和别人**不一致**。Doro 自带 Skill 则从安装根目录加载，不依赖启动目录。想确认自己的环境，请对照上面三份清单逐项检查。
 
 ### MCP server 配置
 
-在 `.mcp.json`（或任一 settings.json 的 `mcpServers` 段）里登记。源码/安装根目录的 `.mcp.json` 会作为 mini-claude 自身的默认 MCP 配置，因此从其他工作目录启动也能发现其中的服务；当前工作目录配置优先级更高。每个 server 二选一：
+在 `.mcp.json`（或任一 settings.json 的 `mcpServers` 段）里登记。源码/安装根目录的 `.mcp.json` 会作为 doro 自身的默认 MCP 配置，因此从其他工作目录启动也能发现其中的服务；当前工作目录配置优先级更高。每个 server 二选一：
 
 **stdio（本地进程）**
 
@@ -330,7 +331,7 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
 
 可选调优：`connectTimeout`（默认 15s，覆盖 connect / initialize / tools-list）、`toolTimeout`（默认 60s，单次 tools/call 的上限，超时不会拖死 agent）、`readOnly`（声明该 server 只读，其工具才允许与其他工具并行执行）、`cwd`（stdio 子进程工作目录，相对值按配置所属项目解析）、`minInterval` / `maxQps`（限制同一 server 的调用频率，见下）。
 
-依赖仓库内相对路径的 stdio 服务应显式配置 `"cwd": "."`。例如根目录 `.mcp.json` 中的 `args` 使用 `extensions/phm` 时，这能保证从其他目录启动 `mini-claude` 仍以仓库根目录解析路径。可共享配置不要写死本机盘符和绝对路径。
+依赖仓库内相对路径的 stdio 服务应显式配置 `"cwd": "."`。例如根目录 `.mcp.json` 中的 `args` 使用 `extensions/phm` 时，这能保证从其他目录启动 `doro` 仍以仓库根目录解析路径。可共享配置不要写死本机盘符和绝对路径。
 
 > **上游限流**：不少托管服务按 API key 限流（高德是 3 QPS）。并行调用的协议层面没问题，但会被上游拒绝。给这类 server 配上 `"maxQps": 3`（或等价的 `"minInterval": 0.34`），客户端会在**每次调用开始之间**留出间隔 —— 既守住限流窗口，又不影响请求本身的并发重叠。不配则完全不限速。
 
@@ -344,10 +345,10 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
 
 以下内容是按项目和机器隔离的运行时数据，由程序自动生成，别人 clone 后为空属正常现象：
 
-- `~/.mini-claude/sessions/` — 会话历史
-- `~/.mini-claude/projects/<hash>/memory/` — 长期记忆
-- `~/.mini-claude/input_history` — REPL 输入历史
-- `~/.mini-claude/tool-results/` — 工具输出缓存
+- `~/.doro/sessions/` — 会话历史
+- `~/.doro/projects/<hash>/memory/` — 长期记忆
+- `~/.doro/input_history` — REPL 输入历史
+- `~/.doro/tool-results/` — 工具输出缓存
 
 它们不在仓库中，也不需要提交。
 
@@ -356,19 +357,19 @@ MINI_CLAUDE_PRICE_CACHE_READ=0.4
 ```powershell
 uv sync --extra test                  # 或用 pip：python -m pip install -e ".[test]"
 uv run pytest
-uv run python -m mini_claude --help
+uv run python -m doro --help
 ```
 
 测试不需要真实 API Key。真实 API smoke test 可自行配置 Key 后运行：
 
 ```powershell
-uv run mini-claude --max-turns 1 "Reply with exactly OK"
+uv run doro --max-turns 1 "Reply with exactly OK"
 ```
 
 ## 源码结构
 
 ```text
-mini_claude/
+doro/
 ├── __main__.py      CLI 与 REPL
 ├── agent.py         Agent 循环、双后端与上下文压缩
 ├── tools.py         文件、搜索、Shell、Web 与权限工具
@@ -415,7 +416,7 @@ CPU、CUDA 与 MPS；后台 Worker 具有单实例租约、心跳和空闲退出
 - [PHM 技术实现与复现指南](extensions/phm/docs/FD001_PHM_GUIDE.md)
 - [Doro 统一项目经历与面试指南](extensions/phm/docs/DORO_PROJECT_EXPERIENCE.md)
 
-运行时会话和记忆保存在用户目录下的 `.mini-claude/` 中。
+运行时会话和记忆保存在用户目录下的 `.doro/` 中。
 
 ## License
 

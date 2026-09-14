@@ -4,10 +4,11 @@
 MCP 推理、异步训练和模型生命周期。Doro 的统一项目经历与面试叙事见
 [DORO_PROJECT_EXPERIENCE.md](DORO_PROJECT_EXPERIENCE.md)。
 
-所有命令默认从仓库根目录执行：
+所有命令默认从 Doro 仓库根目录执行：
 
-```text
-F:\LLM\mini-cc\claude-code-from-scratch-main
+```powershell
+$DORO_ROOT = "F:\path\to\doro"
+Set-Location -LiteralPath $DORO_ROOT
 ```
 
 > 项目边界：C-MAPSS FD001 是 NASA 生成的航空发动机退化仿真数据。本项目用于

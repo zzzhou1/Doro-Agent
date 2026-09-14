@@ -47,7 +47,7 @@ def _project_hash() -> str:
 
 
 def get_memory_dir() -> Path:
-    d = Path.home() / ".mini-claude" / "projects" / _project_hash() / "memory"
+    d = Path.home() / ".doro" / "projects" / _project_hash() / "memory"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

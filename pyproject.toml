@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-code-from-scratch"
+name = "doro-agent"
 version = "1.0.0"
 description = "Doro: an extensible local agent for coding and industrial PHM workflows"
 readme = "README.md"
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mini-claude = "mini_claude.__main__:main"
+doro = "doro.__main__:main"
 
 [project.optional-dependencies]
 test = [
@@ -32,7 +32,7 @@ lint = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["mini_claude*"]
+include = ["doro*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -64,7 +64,7 @@ python_version = "3.11"
 # branches (taskkill, creationflags) checked *and* keeps the POSIX-only ignore
 # in mcp_client.py from becoming an "unused ignore" error on Linux CI.
 platform = "win32"
-files = ["mini_claude"]
+files = ["doro"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true
