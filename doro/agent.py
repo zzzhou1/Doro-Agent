@@ -29,6 +29,7 @@ from .reasoning import (
     DEFAULT_REASONING_EFFORT,
     REASONING_EFFORTS,
     normalize_reasoning_effort,
+    reasoning_fallback_for,
 )
 from .session import save_session
 from .subagent import get_sub_agent_config
@@ -227,30 +228,6 @@ def _get_context_window(model: str) -> int:
 # ─── Thinking support detection ─────────────────────────────
 
 
-def _model_supports_thinking(model: str) -> bool:
-    m = model.lower()
-    if "claude-3-" in m or "3-5-" in m or "3-7-" in m:
-        return False
-    if "claude" in m and any(x in m for x in ("opus", "sonnet", "haiku")):
-        return True
-    return False
-
-
-def _model_known_not_to_support_thinking(model: str) -> bool:
-    """Recognize legacy Claude IDs without rejecting private gateway aliases."""
-    m = model.lower()
-    return "claude" in m and any(x in m for x in ("claude-3-", "3-5-", "3-7-"))
-
-
-def _model_supports_adaptive_thinking(model: str) -> bool:
-    """Adaptive thinking shipped with the 4-6 generation; later Opus/Sonnet
-    releases inherit it. Unverified against the live endpoint — if a gateway
-    rejects `thinking: {"type": "adaptive"}` it fails loudly on the first call.
-    """
-    m = model.lower()
-    return any(x in m for x in ("opus-4-6", "sonnet-4-6", "opus-5", "sonnet-5"))
-
-
 def _get_max_output_tokens(model: str) -> int:
     m = model.lower()
     if any(x in m for x in ("opus-5", "opus-4-6")):
@@ -390,8 +367,8 @@ class Agent:
         self._plan_approval_fn: Callable[[str], Awaitable[dict]] | None = None
         self._context_cleared: bool = False  # Set when plan approval clears context
 
-        # Thinking mode
-        self._validate_reasoning_effort(self.reasoning_effort)
+        # Endpoint compatibility is checked by the real API. Private gateways
+        # and aliases make local model-name capability tables unreliable.
         self._thinking_mode = self._resolve_thinking_mode()
 
         # Output buffer (sub-agents capture output)
@@ -436,25 +413,6 @@ class Agent:
                 kwargs["base_url"] = anthropic_base_url
             self._anthropic_client = anthropic.AsyncAnthropic(**kwargs)
 
-    def _validate_reasoning_effort(self, effort: str, model: str | None = None) -> None:
-        """Reject combinations known to be unsupported without downgrading."""
-        if self.use_openai:
-            # OpenAI-compatible gateways expose many private model IDs. Pass a
-            # canonical value through and let that endpoint reject unsupported
-            # levels instead of guessing from the model name.
-            return
-        if effort == "minimal":
-            raise ValueError("Anthropic does not support the 'minimal' effort level.")
-        target_model = model or self.model
-        if (
-            effort not in ("auto", "off")
-            and _model_known_not_to_support_thinking(target_model)
-        ):
-            raise ValueError(
-                f"Model {target_model!r} does not support configurable thinking. "
-                "Use effort 'auto' or 'off'."
-            )
-
     def _resolve_thinking_mode(self) -> str:
         if self.reasoning_effort == "auto":
             return "auto"
@@ -462,18 +420,13 @@ class Agent:
             return "disabled"
         if self.use_openai:
             return "reasoning"
-        if _model_supports_adaptive_thinking(self.model):
-            return "adaptive"
-        return "enabled"
+        return "adaptive"
 
     def available_reasoning_efforts(self) -> list[str]:
-        if self.use_openai:
-            return list(REASONING_EFFORTS)
-        return [effort for effort in REASONING_EFFORTS if effort != "minimal"]
+        return list(REASONING_EFFORTS)
 
     def set_reasoning_effort(self, effort: str, *, explicit: bool = True) -> str:
         normalized = normalize_reasoning_effort(effort)
-        self._validate_reasoning_effort(normalized)
         self.reasoning_effort = normalized
         self._reasoning_effort_explicit = explicit
         self.thinking = normalized not in ("auto", "off")
@@ -492,26 +445,45 @@ class Agent:
         wire_effort = "none" if self.reasoning_effort == "off" else self.reasoning_effort
         return {"reasoning_effort": wire_effort}
 
-    def _anthropic_reasoning_params(self, max_output: int) -> dict[str, Any]:
+    def _anthropic_reasoning_params(self) -> dict[str, Any]:
         if self.reasoning_effort == "auto":
             return {}
         if self.reasoning_effort == "off":
-            if _model_supports_adaptive_thinking(self.model):
-                return {"thinking": {"type": "disabled"}}
-            return {}
-        if self._thinking_mode == "adaptive":
-            return {
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": self.reasoning_effort},
-            }
-        # Legacy extended-thinking models only expose a token budget. Keep the
-        # existing fixed-budget behavior in this first effort-aware version.
+            return {"thinking": {"type": "disabled"}}
         return {
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": max_output - 1,
-            }
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": self.reasoning_effort},
         }
+
+    async def _with_reasoning_fallback(
+        self,
+        call: Callable[[dict[str, bool]], Awaitable[Any]],
+    ) -> Any:
+        """Run an API call with visible, compatibility-only effort fallback."""
+        fallback_count = 0
+        while True:
+            stream_state = {"started": False}
+            try:
+                return await _with_retry(lambda state=stream_state: call(state))
+            except Exception as error:
+                next_effort = reasoning_fallback_for(error, self.reasoning_effort)
+                if stream_state["started"] or next_effort is None or fallback_count >= 2:
+                    raise
+                # Try one lower controllable level, then omit the field. This
+                # keeps a restrictive gateway from causing a long retry walk.
+                if fallback_count == 1 and next_effort != "auto":
+                    next_effort = "auto"
+                previous = self.reasoning_effort
+                explicit = self._reasoning_effort_explicit
+                self.set_reasoning_effort(next_effort, explicit=explicit)
+                self.effort_source = f"automatic fallback from {previous}"
+                stop_spinner()
+                source = "Requested" if explicit else "Configured"
+                emit_warning(
+                    f"{source} reasoning effort '{previous}' is unsupported by the endpoint; "
+                    f"using '{next_effort}'."
+                )
+                fallback_count += 1
 
     @property
     def is_processing(self) -> bool:
@@ -799,11 +771,10 @@ class Agent:
         print_info("Conversation cleared.")
 
     def switch_model(self, model: str) -> str:
-        """Switch models without changing the backend or silently downgrading effort."""
+        """Switch models without guessing their reasoning capability locally."""
         model = model.strip()
         if not model:
             raise ValueError("Model name cannot be empty")
-        self._validate_reasoning_effort(self.reasoning_effort, model=model)
         self.model = model
         self.context_window = _get_context_window(model)
         self.effective_window = self.context_window - 20000
@@ -1063,13 +1034,10 @@ class Agent:
             model=self.model,
             max_tokens=2048,
             system="You are a conversation summarizer. Be concise but preserve important details.",
-            messages=cast(
-                list[anthropic.types.MessageParam],
-                [
-                    *self._anthropic_messages[:-1],
-                    {"role": "user", "content": "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."},
-                ],
-            ),
+            messages=[
+                *self._anthropic_messages[:-1],
+                {"role": "user", "content": "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."},
+            ],
         )
         first_block = summary_resp.content[0] if summary_resp.content else None
         summary_text = (
@@ -1700,28 +1668,33 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
         during streaming, on_tool_block_complete fires immediately so the caller
         can start execution before the full response arrives (streaming tool
         execution -- mirrors Claude Code's content_block_stop approach)."""
-        async def _do():
+        client = self._anthropic_client
+        assert client is not None, "anthropic backend without a client"
+
+        async def _do(stream_state: dict[str, bool]):
             max_output = _get_max_output_tokens(self.model)
             create_params: dict[str, Any] = {
                 "model": self.model,
-                "max_tokens": max_output if self._thinking_mode in ("adaptive", "enabled") else 16384,
+                "max_tokens": max_output if self._thinking_mode == "adaptive" else 16384,
                 "system": self._system_prompt,
                 "tools": get_active_tool_definitions(self.tools),
                 "messages": self._anthropic_messages,
             }
-            create_params.update(self._anthropic_reasoning_params(max_output))
+            create_params.update(self._anthropic_reasoning_params())
 
             first_text = True
             # Track in-flight tool_use blocks by index for streaming execution
             tool_blocks_by_index: dict[int, dict] = {}
 
-            async with self._anthropic_client.messages.stream(**create_params) as stream:
+            async with client.messages.stream(**create_params) as stream:
                 async for event in stream:
                     if not hasattr(event, 'type'):
                         continue
 
                     if event.type == "content_block_start":
                         cb = getattr(event, 'content_block', None)
+                        if cb is not None:
+                            stream_state["started"] = True
                         if cb and getattr(cb, 'type', None) == "tool_use":
                             tool_blocks_by_index[event.index] = {
                                 "id": cb.id, "name": cb.name, "input_json": "",
@@ -1730,18 +1703,21 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                     elif event.type == "content_block_delta":
                         delta = event.delta
                         if hasattr(delta, 'text'):
+                            stream_state["started"] = True
                             if first_text:
                                 stop_spinner()
                                 self._emit_text("\n")
                                 first_text = False
                             self._emit_text(delta.text)
                         elif hasattr(delta, 'thinking'):
+                            stream_state["started"] = True
                             if first_text:
                                 stop_spinner()
                                 self._emit_text("\n  [thinking] ")
                                 first_text = False
                             self._emit_text(delta.thinking)
                         elif hasattr(delta, 'partial_json'):
+                            stream_state["started"] = True
                             tb = tool_blocks_by_index.get(event.index)
                             if tb:
                                 tb["input_json"] += delta.partial_json
@@ -1765,7 +1741,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             final_message.content = [b for b in final_message.content if b.type != "thinking"]
             return final_message
 
-        return await _with_retry(_do)
+        return await self._with_reasoning_fallback(_do)
 
     # ─── OpenAI-compatible backend ───────────────────────────────
 
@@ -1928,7 +1904,10 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
             self._context_cleared = False
 
     async def _call_openai_stream(self) -> dict:
-        async def _do():
+        client = self._openai_client
+        assert client is not None, "openai backend without a client"
+
+        async def _do(stream_state: dict[str, bool]):
             create_params: dict[str, Any] = {
                 "model": self.model,
                 "tools": _to_openai_tools(get_active_tool_definitions(self.tools)),
@@ -1937,7 +1916,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                 "stream_options": {"include_usage": True},
             }
             create_params.update(self._openai_reasoning_params())
-            stream = await self._openai_client.chat.completions.create(**create_params)
+            stream = await client.chat.completions.create(**create_params)
 
             content = ""
             first_text = True
@@ -1955,7 +1934,14 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                     continue
                 delta = chunk.choices[0].delta
 
+                if delta and (
+                    getattr(delta, "reasoning", None)
+                    or getattr(delta, "reasoning_content", None)
+                ):
+                    stream_state["started"] = True
+
                 if delta and delta.content:
+                    stream_state["started"] = True
                     if first_text:
                         stop_spinner()
                         self._emit_text("\n")
@@ -1964,6 +1950,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                     content += delta.content
 
                 if delta and delta.tool_calls:
+                    stream_state["started"] = True
                     for tc in delta.tool_calls:
                         existing = tool_calls.get(tc.index)
                         if existing:
@@ -2001,7 +1988,7 @@ IMPORTANT: When your plan is complete, you MUST call exit_plan_mode. Do NOT ask 
                 "usage": usage,
             }
 
-        return await _with_retry(_do)
+        return await self._with_reasoning_fallback(_do)
 
     # ─── Shared ──────────────────────────────────────────────────
 

@@ -72,7 +72,7 @@ def test_config_report_never_contains_the_raw_key(monkeypatch, tmp_path) -> None
     assert "sk-s" in rendered  # the masked hint is present
 
 
-def test_config_report_shows_where_each_value_came_from(monkeypatch, tmp_path) -> None:
+def test_config_report_shows_actual_effort_without_requested_mode(monkeypatch, tmp_path) -> None:
     _isolate_mcp_config(monkeypatch, tmp_path)
     agent = _agent()
 
@@ -80,7 +80,9 @@ def test_config_report_shows_where_each_value_came_from(monkeypatch, tmp_path) -
     rendered = "\n".join(lines)
 
     assert "[--model]" in rendered
-    assert "[--effort]" in rendered
+    assert "effort       medium" in rendered
+    assert "[--effort]" not in rendered
+    assert "thinking:" not in rendered
     assert "gpt-5.6-sol" in rendered
     assert "estimated" in rendered  # unknown gateway price is disclosed
     assert "python" in rendered

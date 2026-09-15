@@ -778,7 +778,7 @@ Options:
   --plan              Plan mode: read-only, describe changes without executing
   --accept-edits      Auto-approve file edits, still confirm dangerous shell
   --dont-ask          Auto-deny anything needing confirmation (for CI)
-  --effort LEVEL      Reasoning effort: auto/off/minimal/low/medium/high/xhigh/max
+  --effort LEVEL      Reasoning effort: auto/off/low/medium/high/xhigh/max
                       (default: medium; provider/model support varies)
   --thinking          Backward-compatible alias for --effort high
   --model, -m         Model to use (default per backend: anthropic=claude-opus-5,
@@ -846,11 +846,6 @@ Examples:
     except ValueError as e:
         print_error(str(e))
         sys.exit(2)
-    print_info(
-        f"Backend: {agent.backend} | model: {agent.model} ({model_source}) | "
-        f"effort: {agent.reasoning_effort} ({effort_source})"
-    )
-
     # Resume session
     if args.resume:
         session_id = get_latest_session_id(cwd=Path.cwd(), backend=agent.backend)
@@ -865,6 +860,11 @@ Examples:
                 print_info("No session found to resume.")
         else:
             print_info("No previous sessions found.")
+
+    print_info(
+        f"Backend: {agent.backend} | model: {agent.model} ({model_source}) | "
+        f"effort: {agent.reasoning_effort}"
+    )
 
     prompt = " ".join(args.prompt) if args.prompt else None
 

@@ -79,10 +79,7 @@ def build_config_report(agent: Any) -> tuple[str, list[str]]:
 
     lines.append(f"backend      {agent.backend}")
     lines.append(f"model        {agent.model}   [{agent.model_source}]")
-    lines.append(
-        f"effort       {agent.reasoning_effort}   [{agent.effort_source}]"
-        f"   → thinking: {agent.thinking_mode}"
-    )
+    lines.append(f"effort       {agent.reasoning_effort}")
     lines.append(
         f"context      {agent.context_window} tokens "
         f"(effective {agent.effective_window}, auto-compact at 85%)"

@@ -279,6 +279,11 @@ def test_effort_parser_rejects_legacy_flag_combined_with_level() -> None:
         pytest.raises(SystemExit),
     ):
         parse_args()
+    with (
+        patch.object(sys, "argv", ["doro", "--effort", "minimal"]),
+        pytest.raises(SystemExit),
+    ):
+        parse_args()
 
 
 @pytest.mark.asyncio

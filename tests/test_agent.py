@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from doro.agent import Agent
+from doro.reasoning import reasoning_fallback_for
 
 
 def test_openai_backend_does_not_require_custom_base_url() -> None:
@@ -221,17 +222,17 @@ def test_anthropic_adaptive_effort_mapping() -> None:
             reasoning_effort="high",
         )
 
-    assert agent._anthropic_reasoning_params(64000) == {
+    assert agent._anthropic_reasoning_params() == {
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": "high"},
     }
     agent.set_reasoning_effort("off")
-    assert agent._anthropic_reasoning_params(64000) == {
+    assert agent._anthropic_reasoning_params() == {
         "thinking": {"type": "disabled"}
     }
 
 
-def test_legacy_anthropic_model_keeps_fixed_thinking_budget() -> None:
+def test_anthropic_never_uses_legacy_thinking_budget() -> None:
     with patch("doro.agent.anthropic.AsyncAnthropic"):
         agent = Agent(
             backend="anthropic",
@@ -240,18 +241,22 @@ def test_legacy_anthropic_model_keeps_fixed_thinking_budget() -> None:
             reasoning_effort="low",
         )
 
-    assert agent._thinking_mode == "enabled"
-    assert agent._anthropic_reasoning_params(32000) == {
-        "thinking": {
-            "type": "enabled",
-            "budget_tokens": 31999,
-        }
+    assert agent._thinking_mode == "adaptive"
+    assert agent._anthropic_reasoning_params() == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "low"},
     }
+    assert "budget_tokens" not in str(agent._anthropic_reasoning_params())
 
 
-def test_anthropic_rejects_known_unsupported_effort_without_downgrade() -> None:
+def test_minimal_is_invalid_and_model_switch_defers_capability_check() -> None:
+    class ApiError(Exception):
+        def __init__(self, status_code: int, message: str):
+            super().__init__(message)
+            self.status_code = status_code
+
     with patch("doro.agent.anthropic.AsyncAnthropic"):
-        with pytest.raises(ValueError, match="minimal"):
+        with pytest.raises(ValueError, match="Unknown reasoning effort"):
             Agent(
                 backend="anthropic",
                 model="claude-opus-5",
@@ -265,10 +270,25 @@ def test_anthropic_rejects_known_unsupported_effort_without_downgrade() -> None:
             reasoning_effort="high",
         )
 
-    with pytest.raises(ValueError, match="does not support"):
-        agent.switch_model("claude-3-5-sonnet")
-    assert agent.model == "claude-opus-5"
+    assert agent.switch_model("claude-3-5-sonnet") == "claude-3-5-sonnet"
+    assert agent.model == "claude-3-5-sonnet"
     assert agent.reasoning_effort == "high"
+    assert agent._thinking_mode == "adaptive"
+    assert reasoning_fallback_for(
+        ApiError(400, "unknown parameter: reasoning_effort"), "high"
+    ) == "auto"
+    assert reasoning_fallback_for(
+        ApiError(422, "unsupported value for reasoning_effort"), "high"
+    ) == "medium"
+    assert reasoning_fallback_for(
+        ApiError(401, "unsupported value for reasoning_effort"), "high"
+    ) is None
+    assert reasoning_fallback_for(
+        ApiError(400, "context length is invalid"), "high"
+    ) is None
+    assert reasoning_fallback_for(
+        ApiError(400, "unknown parameter: reasoning_effort"), "off"
+    ) is None
 
 
 def test_explicit_effort_beats_restored_session_effort() -> None:
@@ -293,7 +313,10 @@ def test_explicit_effort_beats_restored_session_effort() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_stream_request_includes_reasoning_effort() -> None:
+async def test_openai_stream_uses_visible_bounded_reasoning_fallback() -> None:
+    class CompatibilityError(Exception):
+        status_code = 400
+
     class EmptyStream:
         def __aiter__(self):
             return self
@@ -308,12 +331,29 @@ async def test_openai_stream_request_includes_reasoning_effort() -> None:
             reasoning_effort="xhigh",
             custom_tools=[],
         )
-    agent._openai_client.chat.completions.create = AsyncMock(return_value=EmptyStream())
+    agent._openai_client.chat.completions.create = AsyncMock(
+        side_effect=[
+            CompatibilityError("unsupported value for reasoning_effort"),
+            EmptyStream(),
+        ]
+    )
 
-    await agent._call_openai_stream()
+    with patch("doro.agent.emit_warning") as warned:
+        await agent._call_openai_stream()
 
-    kwargs = agent._openai_client.chat.completions.create.await_args.kwargs
-    assert kwargs["reasoning_effort"] == "xhigh"
+    calls = agent._openai_client.chat.completions.create.await_args_list
+    assert calls[0].kwargs["reasoning_effort"] == "xhigh"
+    assert calls[1].kwargs["reasoning_effort"] == "high"
+    assert agent.reasoning_effort == "high"
+    warned.assert_called_once()
+
+    async def fails_after_output(state: dict[str, bool]):
+        state["started"] = True
+        raise CompatibilityError("unsupported value for reasoning_effort")
+
+    with pytest.raises(CompatibilityError):
+        await agent._with_reasoning_fallback(fails_after_output)
+    assert agent.reasoning_effort == "high"
 
 
 @pytest.mark.asyncio

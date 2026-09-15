@@ -146,7 +146,7 @@ ANTHROPIC_EFFORT=medium
 
 **模型这一项可以不写。** 每个后端各有内置默认：Anthropic → `claude-opus-5`，OpenAI-compatible → `gpt-5.6-sol`。要换模型用 `ANTHROPIC_MODEL` / `OPENAI_MODEL`，它们只作用于自己的后端。（早先的 `DORO_MODEL` 对全部后端生效，会把一个服务商的模型名带到另一个上，**已移除**。）
 
-**思考强度也可以不写。** 内置默认是 `medium`，可选 `auto`、`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。各模型支持范围不同：Anthropic 不支持 `minimal`；已知不支持的组合会在本地报错，其余由实际 API 端点校验，不会静默降级。
+**思考强度也可以不写。** 内置默认是 `medium`，可选 `auto`、`off`、`low`、`medium`、`high`、`xhigh`、`max`。Doro 不维护模型能力缓存：OpenAI-compatible 使用 `reasoning_effort`，Anthropic 只使用 adaptive thinking，不再使用旧式 token budget。只有端点以 HTTP 400/422 明确拒绝推理参数时才会自动降级，终端会立即显示警告和当前实际强度；已经开始输出后不会重发请求。`off` 不会降级为 `auto`。
 
 `.env` 已被 Git 忽略。
 
@@ -193,7 +193,7 @@ doro --model your-model "hello"
 思考强度解析优先级：REPL `/effort` > 显式 `--effort` / `--thinking` > 恢复会话中保存的值 > `OPENAI_REASONING_EFFORT` / `ANTHROPIC_EFFORT` > `DORO_EFFORT` > 内置 `medium`。`/effort default` 可重置到环境变量或内置默认。
 
 ```text
-ℹ Backend: openai | model: gpt-5.6-sol (default for openai) | effort: medium (built-in default)
+ℹ Backend: openai | model: gpt-5.6-sol (default for openai) | effort: medium
 ```
 
 ## 常用参数
