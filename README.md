@@ -428,6 +428,15 @@ CPU、CUDA 与 MPS；后台 Worker 具有单实例租约、心跳和空闲退出
 
 运行时会话和记忆保存在用户目录下的 `.doro/` 中。
 
+## 项目来源与致谢
+
+Doro 基于 [claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)
+进行二次开发。原项目由 [Windy3f3f3f3f](https://github.com/Windy3f3f3f3f)
+创建，并采用 MIT License 发布。
+
+本项目在原项目基础上进行了功能扩展、重构和适配。原项目代码的版权归原作者所有，
+新增及修改部分的版权归相应贡献者所有。
+
 ## License
 
-MIT
+本项目依照 [MIT License](LICENSE) 发布，并保留上游项目的版权声明。
