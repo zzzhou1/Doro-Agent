@@ -14,3 +14,6 @@ extensions/phm/data/raw/
 extensions/phm/data/processed/
 extensions/phm/artifacts/
 extensions/phm/runtime/
+
+tmp/
+pelican-*.html

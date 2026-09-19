@@ -23,6 +23,11 @@ from .status import format_status_toolbar
 INPUT_HISTORY_FILE = Path.home() / ".doro" / "input_history"
 StatusProvider = Callable[[], Mapping[str, Any]]
 
+# Rows of live content the inline layout actually occupies: the prompt line, the
+# one-row status toolbar, and one spare so a wrapped input line does not push
+# the toolbar onto the cursor row.
+_INLINE_LAYOUT_ROWS = 3
+
 
 class SkillLike(Protocol):
     name: str
@@ -78,6 +83,43 @@ def create_history_key_bindings() -> KeyBindings:
         event.current_buffer.history_forward()
 
     return bindings
+
+
+def pin_layout_to_its_own_rows(renderer) -> None:
+    """Stop prompt_toolkit from reserving every row below the cursor.
+
+    ``Renderer.render()`` sizes the layout with::
+
+        height = max(_min_available_height, last_height, preferred_height)
+
+    and on Windows ``_min_available_height`` comes straight from
+    ``Output.get_rows_below_cursor_position()`` — how many rows sit between the
+    cursor and the bottom of the window. That is the right measure for a
+    full-screen app, but Doro is an inline REPL whose UI is three rows tall, and
+    the max() lets the terminal dominate:
+
+    * Fresh terminal, cursor on row 0 of a 50-row window -> height 50. The
+      prompt is drawn near the top and the status toolbar lands at the *bottom
+      of the window*, with the whole screen blank between them. It only looks
+      pinned once scrollback fills the window.
+    * Fullscreen resize: ``_last_screen`` is dropped when the size changes, but
+      ``_min_available_height`` keeps the *stale* value from the previous size,
+      so the layout redisplays at the old height and leaves blank rows under
+      the input line.
+
+    Clamping it to the rows the layout actually needs makes the layout hug its
+    own content at any window size, which is what an inline prompt should do.
+
+    Re-applied before every render rather than once at startup: the renderer
+    recomputes this value on each ``_request_absolute_cursor_position()`` (once
+    per prompt, and again on every resize), so a single write would be
+    overwritten immediately.
+
+    Not done by printing newlines to push the cursor down: that scrolls a whole
+    screen of blank lines into scrollback on every start, and the value is
+    recomputed after each prompt anyway.
+    """
+    renderer._min_available_height = _INLINE_LAYOUT_ROWS
 
 
 class InlineSelector:
@@ -191,7 +233,7 @@ def create_repl_prompt_session(
         if status_provider is not None
         else None
     )
-    return PromptSession(
+    session: PromptSession = PromptSession(
         message=[("class:prompt", "\n> ")],
         history=FileHistory(str(path)),
         completer=SlashCommandCompleter(skill_provider),
@@ -199,6 +241,10 @@ def create_repl_prompt_session(
         enable_history_search=True,
         key_bindings=create_history_key_bindings(),
         bottom_toolbar=bottom_toolbar,
+        # The default of 8 is dead weight here: on a short terminal the menu
+        # alone could claim the whole window, and it is unrelated to what the
+        # status bar needs.
+        reserve_space_for_menu=_INLINE_LAYOUT_ROWS,
         style=Style.from_dict({
             "prompt": "bold ansigreen",
             "bottom-toolbar": "bg:#101010 #808080",
@@ -207,6 +253,20 @@ def create_repl_prompt_session(
         input=input,
         output=output,
     )
+
+    def _pin_layout(app) -> None:
+        try:
+            pin_layout_to_its_own_rows(app.renderer)
+        except Exception:
+            pass  # A missing renderer must not take the whole REPL down.
+
+    # `before_render` fires inside `_redraw()`, just before `render()` reads the
+    # height — the only point where a clamp actually sticks.
+    # (`pre_run_callables` runs *before* the cursor-position request that
+    # recomputes `_min_available_height`, so a value written there is
+    # overwritten before the first frame.)
+    session.app.before_render += _pin_layout
+    return session
 
 
 async def prompt_choice(

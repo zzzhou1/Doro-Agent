@@ -11,11 +11,13 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
 from doro.interactive import (
+    _INLINE_LAYOUT_ROWS,
     InlineSelector,
     SlashCommandCompleter,
     build_status_toolbar,
     create_history_key_bindings,
     create_repl_prompt_session,
+    pin_layout_to_its_own_rows,
 )
 
 
@@ -149,3 +151,69 @@ def test_inline_selector_renders_one_highlighted_list() -> None:
     assert "Sessions for this project (2):" in text
     assert "❯ 1. one" in text
     assert "2. two" in text
+
+
+def test_layout_is_pinned_to_its_own_rows_not_the_terminal() -> None:
+    """Regression: the inline layout must not reserve the whole window.
+
+    prompt_toolkit sizes the layout with
+    ``max(_min_available_height, last_height, preferred_height)`` and on Windows
+    seeds ``_min_available_height`` from the rows below the cursor. Left alone,
+    a freshly opened tall terminal renders a full-height layout, so the status
+    toolbar is painted at the bottom of the window with blank rows between it
+    and the input line. A stale value from the pre-resize size does the same
+    after a fullscreen toggle.
+    """
+    renderer = SimpleNamespace(_min_available_height=48)
+
+    pin_layout_to_its_own_rows(renderer)
+
+    assert renderer._min_available_height == _INLINE_LAYOUT_ROWS
+
+
+def test_repl_session_clamps_the_layout_before_every_render(tmp_path) -> None:
+    """The clamp must be re-applied per render, and only to the renderer.
+
+    Subscribing instead of writing once at construction is the point: the
+    renderer recomputes ``_min_available_height`` on each prompt and on every
+    resize, so a single assignment would be overwritten immediately.
+    """
+    with create_pipe_input() as pipe_input:
+        session = create_repl_prompt_session(
+            lambda: [],
+            tmp_path / "history",
+            input=pipe_input,
+            output=DummyOutput(),
+        )
+
+    app = session.app
+    # Simulate what the renderer does between frames.
+    app.renderer._min_available_height = 40
+
+    app.before_render.fire()
+
+    assert app.renderer._min_available_height == _INLINE_LAYOUT_ROWS
+
+
+def test_layout_clamp_survives_a_broken_renderer(tmp_path) -> None:
+    """A renderer that rejects the write must not take the REPL down."""
+    with create_pipe_input() as pipe_input:
+        session = create_repl_prompt_session(
+            lambda: [],
+            tmp_path / "history",
+            input=pipe_input,
+            output=DummyOutput(),
+        )
+
+    class Frozen:
+        @property
+        def _min_available_height(self):
+            return 7
+
+        @_min_available_height.setter
+        def _min_available_height(self, _value):
+            raise RuntimeError("renderer exploded")
+
+    session.app.renderer = Frozen()
+
+    session.app.before_render.fire()  # must not raise

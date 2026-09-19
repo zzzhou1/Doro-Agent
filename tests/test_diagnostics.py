@@ -83,7 +83,7 @@ def test_config_report_shows_actual_effort_without_requested_mode(monkeypatch, t
     assert "effort       medium" in rendered
     assert "[--effort]" not in rendered
     assert "thinking:" not in rendered
-    assert "gpt-5.6-sol" in rendered
+    assert "deepseek-v4.1-flash" in rendered
     assert "estimated" in rendered  # unknown gateway price is disclosed
     assert "python" in rendered
 
@@ -200,7 +200,7 @@ def test_none_reasoning_count_reads_as_zero() -> None:
 
 
 def test_switch_model_refreshes_the_rate_card() -> None:
-    agent = _agent(model="gpt-5.6-sol")
+    agent = _agent(model="deepseek-v4.1-flash")
     assert agent.price_resolution.estimated is True
 
     agent.switch_model("gpt-4o")
