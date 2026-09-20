@@ -1034,10 +1034,20 @@ class Agent:
             model=self.model,
             max_tokens=2048,
             system="You are a conversation summarizer. Be concise but preserve important details.",
-            messages=[
-                *self._anthropic_messages[:-1],
-                {"role": "user", "content": "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work."},
-            ],
+            messages=cast(
+                list[anthropic.types.MessageParam],
+                [
+                    *self._anthropic_messages[:-1],
+                    {
+                        "role": "user",
+                        "content": (
+                            "Summarize the conversation so far in a concise paragraph, "
+                            "preserving key decisions, file paths, and context needed "
+                            "to continue the work."
+                        ),
+                    },
+                ],
+            ),
         )
         first_block = summary_resp.content[0] if summary_resp.content else None
         summary_text = (

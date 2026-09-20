@@ -20,6 +20,7 @@ SECRET = "sk-supersecret-value-1234567890"
 
 
 def _agent(**kwargs) -> Agent:
+    kwargs.setdefault("model", "gpt-5.6-sol")
     with patch("doro.agent.openai.AsyncOpenAI"):
         return Agent(
             backend="openai",
@@ -83,7 +84,7 @@ def test_config_report_shows_actual_effort_without_requested_mode(monkeypatch, t
     assert "effort       medium" in rendered
     assert "[--effort]" not in rendered
     assert "thinking:" not in rendered
-    assert "deepseek-v4.1-flash" in rendered
+    assert "gpt-5.6-sol" in rendered
     assert "estimated" in rendered  # unknown gateway price is disclosed
     assert "python" in rendered
 
